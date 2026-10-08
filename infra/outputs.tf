@@ -49,3 +49,15 @@ output "auth_public_settings" {
     scopes       = local.auth_scopes
   }
 }
+
+output "monitoring_status" {
+  description = "Notification configuration only; confirm the email subscription and live delivery before relying on alerts."
+  value = {
+    enabled                = var.monitoring_enabled
+    monthly_budget_usd     = var.monthly_budget_usd
+    budget_name            = try(aws_budgets_budget.monthly[0].name, null)
+    operations_topic_arn   = try(aws_sns_topic.operations[0].arn, null)
+    alert_delivery_dlq_url = try(aws_sqs_queue.alert_delivery[0].url, null)
+    failure_rule_names     = [for rule in aws_cloudwatch_event_rule.job_failure : rule.name]
+  }
+}

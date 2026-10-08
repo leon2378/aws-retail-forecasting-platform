@@ -257,6 +257,7 @@ resource "aws_cloudwatch_metric_alarm" "api_errors" {
   threshold           = 0
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
+  alarm_actions       = var.monitoring_enabled ? [aws_sns_topic.operations[0].arn] : []
 
 }
 resource "aws_cloudwatch_metric_alarm" "ingest_errors" {
@@ -271,5 +272,6 @@ resource "aws_cloudwatch_metric_alarm" "ingest_errors" {
   threshold           = 0
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
+  alarm_actions       = var.monitoring_enabled ? [aws_sns_topic.operations[0].arn] : []
 
 }

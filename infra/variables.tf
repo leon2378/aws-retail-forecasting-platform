@@ -136,3 +136,34 @@ variable "auth_additional_logout_urls" {
     error_message = "Use at most 20 HTTPS root URLs ending in /, or explicit localhost, 127.0.0.1 or [::1] HTTP roots for testing. Queries, fragments and remote HTTP sign-out redirects are not allowed."
   }
 }
+
+variable "monitoring_enabled" {
+  type        = bool
+  default     = false
+  description = "Opt in to the account budget, email topic and job failure rules after reviewing deployment. Does not start or stop jobs."
+}
+
+variable "alert_email" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = "Private recipient for budget and operations emails; keep in ignored local configuration. SNS email requires confirmation after deployment."
+  validation {
+    condition     = var.alert_email == "" || (length(var.alert_email) <= 254 && can(regex("^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?\\.[A-Za-z]{2,63}$", var.alert_email)))
+    error_message = "Enter a valid email address without whitespace, or leave it blank while monitoring is disabled."
+  }
+  validation {
+    condition     = !var.monitoring_enabled || var.alert_email != ""
+    error_message = "Set a private alert_email before enabling monitoring."
+  }
+}
+
+variable "monthly_budget_usd" {
+  type        = number
+  default     = 10
+  description = "Account-wide monthly USD spend warning excluding credits, refunds and discounts. This is an alert threshold, not a spending cap."
+  validation {
+    condition     = var.monthly_budget_usd >= 1 && var.monthly_budget_usd <= 1000 && floor(var.monthly_budget_usd * 100) == var.monthly_budget_usd * 100
+    error_message = "Choose a monthly budget from 1 to 1000 USD with at most two decimal places."
+  }
+}

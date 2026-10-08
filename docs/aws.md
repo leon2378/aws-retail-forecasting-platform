@@ -6,6 +6,8 @@ The completed smoke checks verified resource configuration, HTTPS frontend deliv
 
 Those live smoke checks predate the sign-in change. The current Terraform adds Cognito hosted sign-in, administrator-assigned Viewer/Planner groups and JWT-protected application routes. Its authentication flow has been prepared locally and needs a new deployed check. Read [the authentication guide](authentication.md) before inviting users or exposing non-public data.
 
+Account spending alerts and job/publication failure emails are also prepared locally and remain opt-in. Read [the cost and alert guide](costs-and-alerts.md) to configure a private recipient, validate delivery and stop jobs or remove retained resources. No notifications are active in the removed AWS environment.
+
 ## Rehearse the ML workflow locally
 
 Install the ML/AWS extras and import M5 as described in the [main README](../README.md). Then run the job rehearsal without AWS credentials:
@@ -237,7 +239,7 @@ This creates experiment comparisons and uploads report artifacts to S3. It is an
 
 ## Troubleshooting, costs and cleanup
 
-Inspect the Lambda and `/aws/sagemaker/*` CloudWatch logs, execution step failures, ECR scan and release audit records. Lambda error alarms are defined, with no notification action attached. Add an SNS destination or another operator-owned alert target. There is no automated model drift monitoring yet.
+Inspect the Lambda and `/aws/sagemaker/*` CloudWatch logs, execution step failures, ECR scan and release audit records. Lambda error alarms remain passive by default. Setting `monitoring_enabled = true` with a private `alert_email` attaches their SNS actions and adds SageMaker job/publication/pipeline failure rules, delivery diagnostics and an account-wide monthly budget. Confirm the SNS subscription and test real receipt after a reviewed deployment. These alerts do not enforce a spending cap or monitor model drift. See [the setup and shutdown procedure](costs-and-alerts.md).
 
 For a replay stuck before an execution ARN is stored, first retry ingestion: its saved token is designed to recover a lost response. If snapshot loading or a validation error persists, fix the source or pipeline before retrying. Do not clear a lock while its SageMaker execution is active. A rejected release is an expected business gate outcome and its overall pipeline can still report Succeeded; inspect the registered model's approval state and release entry.
 

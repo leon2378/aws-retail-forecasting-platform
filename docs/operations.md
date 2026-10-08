@@ -71,3 +71,5 @@ On 8 October 2026, the 36-series M5 drill passed in native Windows and the Linux
 Repeat one complete approved AWS replay, verify an invalid arrival starts no ML job, and perform a controlled failure/recovery exercise against the deployed environment. Attach measured outcomes and timestamps to the incident report. Local drill timings are not AWS service-level objectives or recovery guarantees.
 
 Keep schedules and optional experiment infrastructure disabled during those checks. Review the deployment plan and cost controls separately; none of the local commands above creates AWS resources.
+
+The [cost and failure alert guide](costs-and-alerts.md) describes opt-in AWS notifications, delivery verification and a scoped stop-and-cleanup procedure. These are deployment controls; this dashboard does not display live budget usage or prove that an email was delivered.

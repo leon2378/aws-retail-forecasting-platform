@@ -86,8 +86,11 @@ The environments use different dependency versions, recorded in each rehearsal r
 - **Release demonstration:** using the current dataset, a deliberately degraded candidate fails a measured holdout baseline gate and a baseline clone passes at parity. It writes an illustrative local audit log and does not promote a trained model, change the application model or claim improvement.
 - **Operations:** inspect replay progress, the last verified seasonal checkpoint, input quality and persisted audit events. An isolated local recovery drill exercises invalid input, interrupted publication, idempotent retry and rollback with forecast hashes as evidence.
 - **Sign-in and permissions:** Viewer access for inspection and Planner access for simulations and local demonstrations, enforced by the API. Cognito hosted sign-in and JWT authorization are prepared in Terraform; the local role selector is explicitly a preview.
+- **Cost and failure alerts:** opt-in account spending notifications and scoped job, publication and pipeline failure emails, with private delivery diagnostics. Prepared in Terraform; live notification receipt still needs verification.
 
 See [the operations guide](docs/operations.md) for snapshot validation, local recovery commands and the distinction between local checks and verified AWS execution.
+
+See [spending alerts and shutdown](docs/costs-and-alerts.md) for private configuration, email confirmation, alert coverage and the procedure to stop jobs and remove retained resources. Budget alerts are delayed warnings, not a hard spending cap.
 
 ![SupplySight operations and recovery evidence using labelled synthetic data](docs/images/operations-demo.png)
 
@@ -116,7 +119,7 @@ node --test tests/frontend_auth.test.mjs tests/frontend_access.test.mjs
 
 Forecast exports exclude held-out future actuals. Tests cover leakage boundaries, chronological splits, dataset validation, stock flows, edge cases, API input validation and publication safeguards. Optional XGBoost tests skip when that dependency is absent; use the ML extra to run them.
 
-Authentication checks cover denied anonymous/viewer actions, session expiry, CSRF protection and verified cloud claim boundaries. The current suite passes 129 Python tests on Windows and Linux, 22 frontend tests and four offline infrastructure tests. Frontend behavior tests require Node.js 22 or newer; the website itself still needs no Node.js runtime or build. These local checks do not verify a deployed identity provider.
+Authentication checks cover denied anonymous/viewer actions, session expiry, CSRF protection and verified cloud claim boundaries. The current suite passes 129 Python tests on Windows and Linux, 22 frontend tests and 14 offline infrastructure tests covering authentication and monitoring. Frontend behavior tests require Node.js 22 or newer; the website itself still needs no Node.js runtime or build. These local checks do not verify a deployed identity provider or live notification delivery.
 
 Rehearse the ML job stages against your imported M5 archive before creating cloud resources:
 

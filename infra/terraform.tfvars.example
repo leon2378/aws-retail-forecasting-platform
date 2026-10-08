@@ -8,6 +8,12 @@ sagemaker_instance_type = "ml.m5.xlarge"
 # pipeline_definition_file = "../build/pipeline.json"
 enable_delivery = false
 enable_clearml = false
+monitoring_enabled = false
+monthly_budget_usd = 10
+# Put the recipient only in ignored terraform.tfvars, then review a new plan:
+# alert_email = "you@example.com"
+# Budget covers all account spend before credits/refunds/discounts. No hard cap.
+# Confirm the SNS subscription email after a later approved deployment.
 # Cognito sign-in is mandatory for AWS API results and simulations. Users and
 # viewer/planner memberships are invited/assigned outside Terraform by an operator.
 # The CloudFront root is automatically registered for sign-in and sign-out.
