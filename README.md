@@ -1,4 +1,4 @@
-# Shelfcast
+# SupplySight
 
 A retail demand forecasting and replenishment application, with a local development mode and an AWS deployment foundation in **ap-southeast-2 (Sydney)**.
 
@@ -8,7 +8,7 @@ Select a store and product, replay a historical date, inspect the next 28 days o
 
 **Deployment status:** on 8 October 2026, the 43-resource AWS foundation was deployed and passed 21 live infrastructure, API and frontend smoke checks. All 43 resources were subsequently removed to stop ongoing project charges. Development currently runs locally; there is no active hosted application. The Linux image build, offline ML workflow and inference HTTP protocol have passed local validation. Live SageMaker execution, Model Registry and DynamoDB publication remain unverified. Local execution does not need AWS credentials.
 
-![Shelfcast forecast workspace using labelled synthetic data](docs/images/forecast-demo.jpg)
+![SupplySight forecast workspace using labelled synthetic data](docs/images/forecast-demo.jpg)
 
 ## Run locally
 

@@ -500,7 +500,7 @@ function switchView(view, updateHash = true) {
   setText('page-title', views[view][0]);
   setText('page-description', views[view][1]);
   setText('breadcrumb-current', view === 'replenishment' ? 'Replenishment' : views[view][0]);
-  document.title = `Shelfcast · ${views[view][0]}`;
+  document.title = `SupplySight · ${views[view][0]}`;
   if (updateHash) history.replaceState(null, '', `#${view}`);
   if (view === 'forecast') renderChart();
   if (view === 'replenishment' && state.forecast && !state.simulation && !$('simulate-button').disabled) simulate();

@@ -1,4 +1,4 @@
-# Shelfcast frontend
+# SupplySight frontend
 
 Dependency-free HTML, CSS, and ES modules. No build step or third-party CDN is required. Start the repository's Python server, then open its local URL; opening `index.html` directly cannot provide the API.
 
