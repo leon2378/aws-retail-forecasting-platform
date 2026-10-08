@@ -23,6 +23,13 @@ def main(argv=None):
     importer.add_argument("--stores", nargs="+", help="e.g. CA_1 TX_1 WI_1; default all stores")
     importer.add_argument("--max-items", type=int, default=12, help="Maximum items per store")
     importer.add_argument("--output", default="data/dataset.json")
+    downloader = commands.add_parser("download-m5", help="Download the three M5 files using your Kaggle account")
+    downloader.add_argument("--folder", type=Path, default=Path("data/m5"))
+    downloader.add_argument("--force", action="store_true", help="Replace already downloaded CSV files")
+    downloader.add_argument("--import", dest="import_data", action="store_true", help="Validate and import after downloading")
+    downloader.add_argument("--stores", nargs="+", default=["CA_1", "TX_1", "WI_1"])
+    downloader.add_argument("--max-items", type=int, default=12, help="Maximum items per store when importing")
+    downloader.add_argument("--output", default="data/dataset.json", help="Imported dataset path")
     forecast = commands.add_parser("forecast", help="Export a reproducible forecast and backtests")
     forecast.add_argument("--store", default="CA_1")
     forecast.add_argument("--item", default="FOODS_1_001")
@@ -42,6 +49,15 @@ def main(argv=None):
             dataset = import_m5(args.folder, stores=args.stores, max_items=args.max_items)
             write_json(args.output, dataset)
             print(f"Imported {len(dataset['series'])} M5 series, {dataset['total_days']} days -> {args.output}")
+        elif args.command == "download-m5":
+            from .download import download_m5
+            download_m5(args.folder, force=args.force)
+            print(f"M5 CSV files ready -> {args.folder.resolve()}")
+            if args.import_data:
+                from .data import import_m5
+                dataset = import_m5(args.folder, stores=args.stores, max_items=args.max_items)
+                write_json(args.output, dataset)
+                print(f"Imported {len(dataset['series'])} M5 series, {dataset['total_days']} days -> {args.output}")
         elif args.command == "forecast":
             from .storage import LocalRepository
             repo = LocalRepository(args.data_dir)
@@ -54,5 +70,5 @@ def main(argv=None):
             result = LocalRepository(args.data_dir).demo_releases()
             for release in result["releases"][-2:]:
                 print(f"{release['status']}: {release['model']} — {release['reason']}")
-    except (ValueError, LookupError, FileNotFoundError) as exc:
+    except (ValueError, LookupError, FileNotFoundError, RuntimeError) as exc:
         parser.error(str(exc))

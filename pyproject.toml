@@ -13,6 +13,7 @@ dependencies = []
 ml = ["xgboost>=2.1,<4", "numpy>=1.26,<3"]
 aws = ["boto3>=1.35,<2"]
 tracking = ["clearml>=1.16,<3"]
+data = ["kaggle>=2.2.4,<3"]
 
 [project.scripts]
 shelfcast = "retail_forecast.cli:main"

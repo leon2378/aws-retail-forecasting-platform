@@ -1,7 +1,7 @@
 """Deterministic demo data and a bounded, streaming M5 CSV importer.
 
-M5 sales are observed sales, not uncensored demand. No dataset is bundled or
-downloaded automatically; users obtain the competition files under its terms.
+M5 sales are observed sales, not uncensored demand. No dataset is bundled;
+the optional Kaggle downloader obtains competition files under its terms.
 """
 from __future__ import annotations
 

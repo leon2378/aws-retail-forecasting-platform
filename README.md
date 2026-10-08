@@ -32,6 +32,22 @@ On macOS/Linux use `.venv/bin/python` instead. The frontend has no npm build, ex
 
 ## Import M5
 
+For automatic download and import, install the optional official Kaggle client and sign in once:
+
+```powershell
+./.venv/Scripts/python.exe -m pip install -e '.[data]'
+./.venv/Scripts/kaggle.exe auth login
+./.venv/Scripts/python.exe -m retail_forecast download-m5 --import
+```
+
+Complete the browser sign-in prompts; the client saves your authorization locally. If Kaggle asks you to join the competition or accept its rules, do that on the [M5 competition page](https://www.kaggle.com/competitions/m5-forecasting-accuracy) before downloading. The command downloads only the three required CSVs into `data/m5`, safely extracts compressed responses, validates the data and imports 12 products per store from CA_1, TX_1 and WI_1. Use `--stores` and `--max-items` to change that subset. Existing valid files are reused; `--force` downloads replacements.
+
+The official client also supports an API token in `~/.kaggle/access_token`, or legacy credentials in `~/.kaggle/kaggle.json`. Configure credentials locally, outside this repository. Downloaded data and credential filenames are ignored by Git. See [Kaggle's authentication documentation](https://github.com/Kaggle/kaggle-cli/blob/main/docs/README.md#authentication).
+
+Restart the local server after import to replace the synthetic demonstration with M5 sales.
+
+For a manual download:
+
 Obtain the data through the official [M5 Forecasting – Accuracy dataset page](https://www.kaggle.com/competitions/m5-forecasting-accuracy/data), following its competition terms. Extract these files into a local folder:
 
 - `sales_train_evaluation.csv` (preferred), or `sales_train_validation.csv`

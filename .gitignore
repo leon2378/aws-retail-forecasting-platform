@@ -13,6 +13,9 @@ build/
 terraform.tfvars
 .env
 clearml.conf
+kaggle.json
+access_token
+.kaggle/
 *.pem
 *.zip
 !infra/.terraform.lock.hcl
