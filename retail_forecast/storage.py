@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from .data import demo_dataset
 from .forecast import analyze_series
+from .operations import LocalOperations
 
 MIN_CUTOFF = 196
 HORIZON = 28
@@ -67,26 +68,75 @@ def build_forecast_payload(dataset, store, item, cutoff, model="seasonal", analy
 class LocalRepository:
     mode = "local"
 
-    def __init__(self, data_dir="data", dataset=None):
+    def __init__(self, data_dir="data", dataset=None, approve_contract=False):
         self.data_dir = Path(data_dir)
         dataset_path = self.data_dir / "dataset.json"
-        self.dataset = dataset if dataset is not None else (
-            json.loads(dataset_path.read_text(encoding="utf-8")) if dataset_path.exists() else demo_dataset())
         self._cache = OrderedDict()
         self._lock = RLock()
+        self._operations = LocalOperations(self.data_dir / "operations", build_forecast_payload)
+        if dataset is not None:
+            self.dataset = self._operations.initialize(dataset, approve_contract=approve_contract)
+        elif dataset_path.exists():
+            self.dataset = self._operations.initialize(source_path=dataset_path, approve_contract=approve_contract)
+        else:
+            # Restart an explicitly supplied dataset's verified checkpoint even
+            # when no importer-owned dataset.json was written by the caller.
+            accepted = self._operations.active()
+            candidate = accepted["dataset"] if accepted else demo_dataset()
+            self.dataset = self._operations.initialize(candidate, approve_contract=approve_contract)
+        self._dataset_hash = self._operations.active()["manifest"]["dataset_hash"]
+
+    @classmethod
+    def import_snapshot(cls, path, dataset):
+        """Explicit CLI import: gate, checkpoint and atomically replace its source."""
+        repository = cls.__new__(cls)
+        repository.data_dir = Path(path).parent
+        repository._cache = OrderedDict()
+        repository._lock = RLock()
+        repository._operations = LocalOperations(repository.data_dir / "operations", build_forecast_payload)
+        repository.dataset = repository._operations.import_snapshot(path, dataset)
+        repository._dataset_hash = repository._operations.active()["manifest"]["dataset_hash"]
+        return repository
+
+    def _sync_dataset(self):
+        active = self._operations.active()
+        if active and active["manifest"]["dataset_hash"] != self._dataset_hash:
+            self.dataset = active["dataset"]
+            self._dataset_hash = active["manifest"]["dataset_hash"]
+            self._cache.clear()
+        return active
 
     def catalog(self):
-        return build_catalog(self.dataset)
+        with self._lock:
+            self._sync_dataset()
+            return build_catalog(self.dataset)
 
     def forecast(self, store, item, cutoff, model):
         key = (store, item, cutoff, model)
         with self._lock:
+            active = self._sync_dataset()
+            if active and model == "seasonal" and cutoff == active["manifest"]["cutoff"]:
+                payload = next((row for row in active["forecasts"]
+                                if row["store_id"] == store and row["item_id"] == item), None)
+                if payload is None:
+                    raise LookupError("This store/product pair is not in the dataset")
+                series = next(row for row in active["dataset"]["series"]
+                              if row["store_id"] == store and row["item_id"] == item)
+                return {**payload, "_actuals": series["values"][cutoff:cutoff + HORIZON]}
             if key not in self._cache:
                 self._cache[key] = build_forecast_payload(self.dataset, *key)
                 if len(self._cache) > 64:
                     self._cache.popitem(last=False)
             self._cache.move_to_end(key)
             return self._cache[key]
+
+    def operations(self):
+        return self._operations.status()
+
+    def recovery_drill(self, request_token=None):
+        with self._lock:
+            self._sync_dataset()
+            return self._operations.run_drill(self.dataset, request_token)
 
     def releases(self):
         with self._lock:
@@ -99,6 +149,7 @@ class LocalRepository:
         This does not promote the application's forecast model or assert ML improvement.
         """
         with self._lock:
+            self._sync_dataset()
             series = self.dataset["series"][0]
             cutoff = self.dataset["total_days"] - HORIZON
             result = self.forecast(series["store_id"], series["item_id"], cutoff, "seasonal")
@@ -182,3 +233,70 @@ class DynamoRepository:
 
     def demo_releases(self):
         raise PermissionError("Release demonstrations run locally; AWS releases are controlled by the ML pipeline")
+
+    def recovery_drill(self, request_token=None):
+        raise PermissionError("Recovery drills run in an isolated local workspace; AWS operations are read-only")
+
+    def operations(self):
+        """Read only existing publication/replay records; do not poll job services."""
+        scope = "AWS published metadata"
+        try:
+            catalog = self.catalog()
+        except LookupError:
+            catalog = {}
+        replay = _plain(self.table.get_item(Key={"pk": "REPLAY", "sk": "STATE"},
+                                           ConsistentRead=True).get("Item", {}))
+        cutoff = catalog.get("default_cutoff")
+        marker = _plain(self.table.get_item(Key={"pk": "COMPLETED", "sk": f"{cutoff:09d}"},
+                                           ConsistentRead=True).get("Item", {})) if isinstance(cutoff, int) else {}
+        releases = self.releases()["releases"]
+        expected = replay.get("pending_cutoff", replay.get("cutoff", cutoff))
+        lag = max(0, expected - cutoff) if isinstance(expected, int) and isinstance(cutoff, int) else None
+        committed = bool(marker.get("run_id") and marker.get("models"))
+        if catalog.get("published_run_id") and catalog["published_run_id"] != marker.get("run_id"):
+            committed = False
+        quality = replay.get("latest_quality")
+        if not isinstance(quality, dict):
+            quality = {"passed": None, "checked_at": None, "source": catalog.get("source"),
+                       "cutoff": None, "series_count": None, "snapshot_sha256": None,
+                       "checks": [], "issues": []}
+        alerts = []
+        if catalog and not committed:
+            alerts.append({"severity": "error", "message": "Catalog metadata has no matching completed publication marker."})
+        if quality.get("passed") is False:
+            alerts.append({"severity": "error", "message": "The latest source failed data quality checks; previously completed publications remain available."})
+        elif committed and quality.get("passed") is None:
+            alerts.append({"severity": "warning", "message": "Data quality results are not recorded for this publication."})
+        if lag:
+            alerts.append({"severity": "warning", "message": f"The active forecast is {lag} historical replay day(s) behind the expected cutoff."})
+        runs = [{"id": row.get("id"), "type": "model_release",
+                 "status": "completed" if row.get("status") == "Approved" else "rejected" if row.get("status") == "Rejected" else "unknown",
+                 "stage": "release_gate", "cutoff": row.get("metrics", {}).get("cutoff"),
+                 "started_at": None, "finished_at": row.get("created_at"),
+                 "reason": row.get("reason"), "scope": scope} for row in releases[:20]]
+        if replay.get("run_id"):
+            runs.insert(0, {"id": replay["run_id"], "type": "replay", "status": "pending",
+                "stage": "Pipeline execution state not recorded", "cutoff": replay.get("pending_cutoff"),
+                "started_at": replay.get("started_at"), "finished_at": None,
+                "reason": "A replay lock exists; its actual job state is unknown to this dashboard.", "scope": scope})
+        matching = next((row for row in releases if row.get("id") == marker.get("run_id")), {})
+        active_model = next((model for model in marker.get("models", []) if model != "seasonal"),
+                            marker.get("models", [None])[0] if marker.get("models") else None)
+        return {"mode": "aws", "scope": scope, "source": catalog.get("source"),
+            "source_label": catalog.get("source_label"),
+            "summary": {"status": "awaiting_publication" if not catalog else "attention" if alerts else "healthy",
+                "last_success_at": catalog.get("published_at", matching.get("created_at")) if committed else None,
+                "active_cutoff": cutoff if committed else None,
+                "active_as_of": (date.fromisoformat(catalog["start_date"]) + timedelta(days=cutoff - 1)).isoformat()
+                    if committed and catalog.get("start_date") and isinstance(cutoff, int) else None,
+                "expected_cutoff": expected, "replay_lag_days": lag, "active_model": active_model if committed else None,
+                "active_version": marker.get("run_id") if committed else None,
+                "snapshot_hash": catalog.get("snapshot_sha256") if committed else None,
+                "series_count": len(catalog.get("products", [])) if committed else 0},
+            "quality": quality, "runs": runs[:20],
+            "events": [{"at": row.get("created_at"), "type": "model_release", "message": row.get("reason"),
+                        "run_id": row.get("id")} for row in releases[:30]],
+            "latest_drill": None, "capabilities": {"can_run_drill": False}, "alerts": alerts,
+            "limitations": ["AWS status reads recorded DynamoDB metadata only; running SageMaker job state is unknown unless recorded.",
+                "Publication markers guard forecast visibility; this view does not re-download or hash S3 artifacts.",
+                "Freshness follows historical replay cutoffs. No latency or uptime telemetry is collected."]}

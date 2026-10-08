@@ -70,6 +70,14 @@ def handle_request(method, path, query, body, repository):
             return 200, {"status": "ok", "mode": repository.mode}
         if method == "GET" and path == "/api/catalog":
             return 200, repository.catalog()
+        if method == "GET" and path == "/api/operations":
+            return 200, repository.operations()
+        if method == "POST" and path == "/api/operations/drill":
+            if not isinstance(body, dict):
+                raise ValueError("Request body must be a JSON object")
+            if set(body) - {"request_token"}:
+                raise ValueError("Recovery drills accept only an optional request_token")
+            return 200, repository.recovery_drill(body.get("request_token"))
         if method == "GET" and path == "/api/forecast":
             result = repository.forecast(*_selection(query, repository))
             return 200, {k: v for k, v in result.items() if not k.startswith("_")}

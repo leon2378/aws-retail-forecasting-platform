@@ -56,7 +56,7 @@ def build_pipeline(*, name, role_arn, image_uri, bucket, table_name, model_group
         return result
 
     prepare = processing("Prepare", ["--cutoff", join(cutoff), "--model", get("Parameters.CandidateModel")],
-                         inputs=[("source", get("Parameters.SnapshotUri"))], outputs=["history", "labels", "requests", "catalog"])
+                         inputs=[("source", get("Parameters.SnapshotUri"))], outputs=["history", "labels", "requests", "catalog", "quality"])
     train = {"Name": "Train", "Type": "Training", "Arguments": {
         "TrainingJobName": job_name("train"), "RoleArn": role_arn,
         "AlgorithmSpecification": {"TrainingImage": image_uri, "TrainingInputMode": "File"},

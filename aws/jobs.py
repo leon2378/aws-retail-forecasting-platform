@@ -50,8 +50,15 @@ def series_key(store, item):
 
 def prepare(args):
     from retail_forecast.storage import build_catalog
-    source = next((INPUT / "source").glob("*.json"))
-    dataset = read_json(source)
+    from retail_forecast.quality import read_snapshot, parse_snapshot, SnapshotQualityError
+    sources = list((INPUT / "source").glob("*.json"))
+    dataset, quality = (read_snapshot(sources[0], cutoff=args.cutoff) if len(sources) == 1 else
+                        parse_snapshot(None, cutoff=args.cutoff))
+    # Persist failure evidence before raising; no history, labels or requests
+    # are produced from a rejected snapshot.
+    write_json(OUTPUT / "quality/quality.json", quality)
+    if not quality["passed"]:
+        raise SnapshotQualityError(quality)
     history, labels = split_snapshot(dataset, args.cutoff, args.model)
     models = sorted({"seasonal", args.model})
     catalog = build_catalog(dataset, mode="aws", available_models=models)
@@ -174,6 +181,9 @@ def publish(args):
     catalog = read_json(INPUT / "catalog/catalog.json")
     previous = table.get_item(Key={"pk": "CATALOG", "sk": "META"}, ConsistentRead=True).get("Item", {})
     catalog["min_cutoff"] = previous.get("payload", {}).get("min_cutoff", args.cutoff)
+    catalog["published_at"] = datetime.now(timezone.utc).isoformat()
+    catalog["published_run_id"] = args.run_id
+    catalog["snapshot_sha256"] = state.get("latest_quality", {}).get("snapshot_sha256")
     if catalog["default_cutoff"] != args.cutoff:
         raise ValueError("Catalog cutoff does not match the pending run")
     expected = {(s["store_id"], s["item_id"], m["id"]) for s in catalog["products"]

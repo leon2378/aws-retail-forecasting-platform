@@ -1,7 +1,7 @@
 const $ = (id) => document.getElementById(id);
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const COLORS = { actual: '#91a49d', forecast: '#286b5d', baseline: '#d59460', band: '#dcebdc', grid: '#e9eee5', text: '#92a08c' };
-const state = { catalog: null, forecast: null, mode: null, view: 'forecast', cutoff: null, forecastRequest: 0, simulationRequest: 0, simulation: null, releasesLoaded: false, releaseRequest: 0, chartIndex: null };
+const state = { catalog: null, forecast: null, mode: null, view: 'forecast', cutoff: null, forecastRequest: 0, simulationRequest: 0, simulation: null, releasesLoaded: false, releaseRequest: 0, chartIndex: null, operations: null, operationsRequest: 0, operationsLoading: false, drillRunning: false };
 const number = (value, digits = 0) => value === null || value === undefined || !Number.isFinite(Number(value)) ? '—' : new Intl.NumberFormat('en-US', { maximumFractionDigits: digits, minimumFractionDigits: digits }).format(Number(value));
 const percent = (value, digits = 1) => value === null || value === undefined || !Number.isFinite(Number(value)) ? '—' : `${number(Number(value) * 100, digits)}%`;
 const money = (value) => value === null || value === undefined || !Number.isFinite(Number(value)) ? '—' : `$${number(value, 2)}`;
@@ -69,7 +69,7 @@ function setLoading(loading, message = 'Updating the forecast and backtests…')
   $('replay-next').disabled = loading || !state.catalog || state.cutoff >= bounds.max || state.forecast?.replay?.can_advance === false;
   $('simulate-button').disabled = loading || !state.forecast;
   $('assumptions-form').querySelectorAll('input').forEach((input) => { input.disabled = loading || !state.forecast; });
-  $('main').setAttribute('aria-busy', loading ? 'true' : 'false');
+  $('data-content').setAttribute('aria-busy', loading ? 'true' : 'false');
 }
 
 function showError(error) {
@@ -140,7 +140,7 @@ async function boot() {
 function updateRuntime(mode) {
   state.mode = mode;
   const aws = mode === 'aws';
-  setText('runtime-label', aws ? 'AWS deployment' : 'Local development');
+  setText('runtime-label', aws ? 'AWS deployment' : mode === 'local' ? 'Local development' : 'Connection pending');
   const button = $('release-demo-button');
   button.disabled = aws || mode !== 'local';
   button.textContent = aws ? 'Managed by SageMaker' : 'Run release demo ↗';
@@ -152,11 +152,12 @@ function updateRuntime(mode) {
 
 function updateSource(data) {
   const synthetic = data.source === 'synthetic';
+  const m5 = data.source === 'm5';
   const badge = $('source-badge');
-  badge.replaceChildren(element('span'), document.createTextNode(synthetic ? 'Synthetic demo data' : 'M5 historical sales'));
-  badge.classList.toggle('real-data', !synthetic);
-  badge.title = data.source_label || (synthetic ? 'Generated demonstration data, not the M5 dataset.' : 'Imported M5 historical sales data.');
-  setText('footer-source', synthetic ? 'Synthetic data · For demonstration only' : 'M5 sales data · Historical replay');
+  badge.replaceChildren(element('span'), document.createTextNode(synthetic ? 'Synthetic demo data' : m5 ? 'M5 historical sales' : 'Data source pending'));
+  badge.classList.toggle('real-data', m5);
+  badge.title = data.source_label || (synthetic ? 'Generated demonstration data, not the M5 dataset.' : m5 ? 'Imported M5 historical sales data.' : 'The data source has not been verified.');
+  setText('footer-source', synthetic ? 'Synthetic data · For demonstration only' : m5 ? 'M5 sales data · Historical replay' : 'Historical replay workspace');
 }
 
 async function loadForecast() {
@@ -483,14 +484,251 @@ async function runReleaseDemo() {
   }
 }
 
+function operationsTimestamp(value) {
+  if (!value) return 'Not recorded';
+  const date = new Date(value);
+  if (!Number.isFinite(date.valueOf())) return 'Not recorded';
+  return date.toLocaleString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Australia/Sydney' });
+}
+
+function operationsDate(value) {
+  if (!value || !Number.isFinite(parseDate(value).valueOf())) return 'Not recorded';
+  return formatDate(value, true);
+}
+
+function operationsStatus(value) {
+  const labels = { healthy: 'Healthy', attention: 'Needs attention', awaiting_publication: 'Awaiting publication', passed: 'Passed', failed: 'Failed', warning: 'Review', completed: 'Completed', succeeded: 'Succeeded', running: 'Running', pending: 'Pending', unknown: 'Not recorded', rejected: 'Rejected', quarantined: 'Quarantined', interrupted: 'Interrupted' };
+  return { className: Object.hasOwn(labels, value) ? value : 'pending', label: labels[value] || 'Pending' };
+}
+
+function statusBadge(value) {
+  const status = operationsStatus(value);
+  return element('span', `operations-status ${status.className}`, status.label);
+}
+
+function setOperationsStatus(id, value) {
+  const status = operationsStatus(value);
+  $(id).className = `operations-status ${status.className}`;
+  $(id).textContent = status.label;
+}
+
+function setDrillAvailability() {
+  const data = state.operations;
+  const local = data?.mode === 'local' && data?.capabilities?.can_run_drill === true;
+  $('operations-drill-button').disabled = !local || state.drillRunning || state.operationsLoading;
+  $('operations-drill-button').textContent = state.drillRunning ? 'Running recovery drill…' : local ? 'Run recovery drill →' : data?.mode === 'aws' ? 'Local exercise only' : 'Recovery unavailable';
+  $('operations-refresh').disabled = state.drillRunning || state.operationsLoading;
+  $('operations-retry').disabled = state.drillRunning || state.operationsLoading;
+}
+
+async function loadOperations() {
+  if (state.drillRunning) return;
+  const request = ++state.operationsRequest;
+  state.operationsLoading = true;
+  state.operations = null;
+  $('view-operations').setAttribute('aria-busy', 'true');
+  $('operations-loading').hidden = false;
+  $('operations-content').hidden = true;
+  $('operations-error').hidden = true;
+  $('operations-drill-error').hidden = true;
+  $('operations-drill-summary').hidden = true;
+  $('operations-drill-steps').hidden = true;
+  $('operations-drill-proof').hidden = true;
+  setDrillAvailability();
+  try {
+    const data = await api('/api/operations');
+    if (request !== state.operationsRequest) return;
+    if (!data.summary || !data.quality || !['local', 'aws'].includes(data.mode)) throw new Error('Operational status is incomplete. Please refresh when the workspace is available.');
+    state.operations = data;
+    renderOperations(data);
+    $('operations-content').hidden = false;
+    setText('operations-announcement', `Operations updated. ${operationsStatus(data.summary.status).label}. ${number(data.summary.series_count)} published series.`);
+  } catch (error) {
+    if (request !== state.operationsRequest) return;
+    setText('operations-error-text', error.message || 'Unable to load operational status.');
+    $('operations-error').hidden = false;
+    setText('operations-announcement', 'Unable to load operational status. Use Try again to retry.');
+  } finally {
+    if (request === state.operationsRequest) {
+      state.operationsLoading = false;
+      $('operations-loading').hidden = true;
+      $('view-operations').setAttribute('aria-busy', 'false');
+      setDrillAvailability();
+    }
+  }
+}
+
+function renderOperations(data) {
+  const summary = data.summary;
+  const local = data.mode === 'local';
+  setText('operations-scope', data.scope || (local ? 'LOCAL REHEARSAL' : 'AWS PUBLISHED METADATA'));
+  setText('operations-source', data.source === 'm5' ? 'M5 historical sales' : data.source === 'synthetic' ? 'Synthetic demonstration data' : 'No accepted data source yet');
+  $('operations-source').title = data.source_label || '';
+  if (state.view === 'operations') {
+    updateRuntime(data.mode);
+    updateSource(data);
+  }
+  const awaiting = summary.status === 'awaiting_publication';
+  setText('operations-health-title', awaiting ? 'Waiting for a valid publication.' : summary.status === 'healthy' ? 'A valid forecast is available.' : 'Review the latest workflow evidence.');
+  setText('operations-health-description', local ? 'Evidence from the local publication and recovery workspace. AWS infrastructure and job health are not monitored here.' : 'Evidence from recorded AWS publication metadata. Unrecorded jobs and infrastructure state are outside this view.');
+  setOperationsStatus('operations-status', summary.status);
+  $('operations-health-title').closest('.operations-health').classList.toggle('needs-attention', summary.status === 'attention');
+  const alerts = Array.isArray(data.alerts) ? data.alerts : [];
+  $('operations-alerts').replaceChildren(...alerts.map((alert) => {
+    const node = element('div', `operations-alert ${alert.severity === 'error' ? 'error' : 'warning'}`);
+    node.append(element('span', 'operations-alert-symbol', alert.severity === 'error' ? '!' : 'i'), element('p', null, alert.message || 'Review the latest recorded event.'));
+    return node;
+  }));
+  setText('operations-last-success', operationsTimestamp(summary.last_success_at));
+  setText('operations-last-success-note', summary.last_success_at ? `${local ? 'Local checkpoint' : 'Published batch'} · Sydney time` : 'No recorded publication yet');
+  setText('operations-replay-progress', validNumber(summary.active_cutoff) ? `Day ${number(summary.active_cutoff)}` : 'Not published');
+  const expected = validNumber(summary.expected_cutoff) ? `Expected day ${number(summary.expected_cutoff)}` : 'Expected day not recorded';
+  const lag = validNumber(summary.replay_lag_days) ? Number(summary.replay_lag_days) === 0 ? 'Replay caught up' : `${number(summary.replay_lag_days)} day${Number(summary.replay_lag_days) === 1 ? '' : 's'} behind` : 'Lag not recorded';
+  setText('operations-replay-note', `${expected} · ${lag}`);
+  setText('operations-replay-observed', summary.active_as_of ? `Observed through ${operationsDate(summary.active_as_of)}` : 'Observation cutoff not recorded');
+  $('operations-replay-progress').title = summary.active_as_of ? `Observed through ${operationsDate(summary.active_as_of)}` : '';
+  setText('operations-model', summary.active_model === 'seasonal' ? 'Seasonal baseline' : summary.active_model === 'xgboost' ? 'XGBoost' : summary.active_model || 'Not published');
+  setText('operations-version', summary.active_version ? `Version ${summary.active_version}` : 'No active model version');
+  setText('operations-series', number(summary.series_count));
+  const quality = data.quality;
+  setOperationsStatus('operations-quality-status', quality.passed === true ? 'passed' : quality.passed === false ? 'failed' : 'pending');
+  setText('operations-quality-meta', quality.checked_at ? `Latest snapshot check · ${operationsTimestamp(quality.checked_at)} Sydney` : 'No snapshot check recorded yet.');
+  const checks = Array.isArray(quality.checks) ? quality.checks : [];
+  $('operations-quality-checks').replaceChildren(...checks.map((check) => {
+    const row = element('div', 'operations-check-row');
+    const copy = element('div', 'operations-check-copy');
+    copy.append(element('strong', null, check.label || 'Snapshot check'), element('p', null, check.detail || 'No additional detail recorded.'));
+    row.append(copy, statusBadge(check.status));
+    return row;
+  }));
+  if (!checks.length) $('operations-quality-checks').append(element('div', 'empty-state', 'No data quality checks are recorded yet.'));
+  const issues = Array.isArray(quality.issues) ? quality.issues : [];
+  $('operations-quality-issues').hidden = !issues.length;
+  $('operations-quality-issues').replaceChildren(...issues.map((issue) => {
+    const node = element('div', 'operations-quality-issue');
+    node.append(element('strong', null, issue.severity === 'warning' ? 'Review' : 'Blocked'), element('p', null, issue.message || 'A snapshot issue needs review.'));
+    return node;
+  }));
+  const hash = quality.snapshot_sha256;
+  $('operations-lineage').hidden = !hash;
+  setText('operations-snapshot-hash', hash || '');
+  const runs = Array.isArray(data.runs) ? data.runs : [];
+  const active = runs.filter((run) => ['running', 'pending'].includes(run.status)).length;
+  const failed = runs.filter((run) => ['failed', 'quarantined', 'interrupted', 'rejected'].includes(run.status)).length;
+  setText('operations-run-count', `${number(runs.length)} RECORDED`);
+  setText('operations-runs-note', `${number(active)} active or pending · ${number(failed)} blocked or interrupted in this history`);
+  $('operations-run-list').replaceChildren(...runs.map((run) => {
+    const row = element('article', 'operations-run-row');
+    const heading = element('div', 'operations-run-heading');
+    const label = String(run.type || 'Workflow run').replaceAll('_', ' ');
+    heading.append(element('strong', null, label), statusBadge(run.status));
+    const stage = String(run.stage || 'Stage not recorded').replaceAll('_', ' ');
+    row.append(heading, element('p', null, `${stage}${validNumber(run.cutoff) ? ` · Replay day ${number(run.cutoff)}` : ''}`));
+    if (run.reason) row.append(element('p', 'operations-run-reason', run.reason));
+    row.append(element('div', 'operations-run-meta', `${operationsTimestamp(run.finished_at || run.started_at)} · ${run.scope || data.scope || 'Recorded workflow'}`));
+    return row;
+  }));
+  if (!runs.length) $('operations-run-list').append(element('div', 'empty-state', 'No workflow runs have been recorded. The last valid publication, when available, remains the planning source.'));
+  setText('operations-drill-description', local ? 'This isolated local exercise blocks a bad snapshot, interrupts a candidate batch, retries it, and restores the previous valid forecast. It preserves the working dataset and does not execute AWS jobs.' : 'Recovery drills run in the local rehearsal workspace. This AWS view shows recorded publication evidence and cannot start an isolated local exercise.');
+  renderDrill(data.latest_drill);
+  const events = Array.isArray(data.events) ? data.events : [];
+  setText('operations-event-count', `${number(events.length)} EVENT${events.length === 1 ? '' : 'S'}`);
+  $('operations-event-list').replaceChildren(...events.map((event) => {
+    const row = element('article', 'operations-event-row');
+    const copy = element('div', 'operations-event-copy');
+    copy.append(element('strong', null, String(event.type || 'Workflow event').replaceAll('_', ' ')), element('p', null, event.message || 'Operational event recorded.'));
+    row.append(element('span', 'operations-event-dot'), copy, element('time', 'operations-event-time', operationsTimestamp(event.at)));
+    return row;
+  }));
+  if (!events.length) $('operations-event-list').append(element('div', 'empty-state', 'No operational events are recorded yet.'));
+  const limitations = Array.isArray(data.limitations) ? data.limitations : [];
+  $('operations-limitations').hidden = !limitations.length;
+  $('operations-limitations').replaceChildren(...limitations.map((limitation) => element('p', null, limitation)));
+  setDrillAvailability();
+}
+
+function renderDrill(drill) {
+  const recorded = !!drill;
+  $('operations-drill-empty').hidden = recorded;
+  $('operations-drill-summary').hidden = !recorded;
+  $('operations-drill-steps').hidden = !recorded;
+  $('operations-drill-proof').hidden = !recorded;
+  $('operations-drill-steps').replaceChildren();
+  $('operations-drill-proof').replaceChildren();
+  $('operations-drill-empty').querySelector('strong').textContent = 'No recovery drill recorded yet.';
+  $('operations-drill-empty').querySelector('p').textContent = 'Run the isolated exercise to collect its step-by-step audit trail and checks.';
+  if (!drill) return;
+  setOperationsStatus('operations-drill-status', drill.status);
+  setText('operations-recovery-time', validNumber(drill.recovery_seconds) ? `${number(drill.recovery_seconds, 2)}s recorded recovery` : 'Recovery time not recorded');
+  setText('operations-drill-time', `${operationsTimestamp(drill.finished_at || drill.started_at)} Sydney · ${drill.scope || 'Local rehearsal'}`);
+  const steps = Array.isArray(drill.steps) ? drill.steps : [];
+  $('operations-drill-steps').replaceChildren(...steps.map((step, index) => {
+    const row = element('li', 'operations-drill-step');
+    const copy = element('div', 'operations-drill-step-copy');
+    const title = element('div', 'operations-drill-step-title');
+    title.append(element('strong', null, step.label || `Step ${index + 1}`), statusBadge(step.status));
+    copy.append(title, element('p', null, step.detail || 'No step detail recorded.'));
+    row.append(element('span', 'operations-step-number', String(index + 1)), copy);
+    return row;
+  }));
+  const proof = drill.proof || {};
+  const proofs = [['invalid_snapshot_blocked', 'Invalid snapshot blocked'], ['interrupted_batch_hidden', 'Incomplete batch hidden'], ['retry_idempotent', 'Retry kept one publication'], ['rollback_restored', 'Previous forecast restored']];
+  $('operations-drill-proof').replaceChildren(...proofs.map(([key, label]) => {
+    const node = element('div', 'operations-proof');
+    node.append(element('span', null, label), statusBadge(proof[key] === true ? 'passed' : proof[key] === false ? 'failed' : 'pending'));
+    return node;
+  }));
+}
+
+async function runRecoveryDrill() {
+  if (state.operations?.mode !== 'local' || state.operations?.capabilities?.can_run_drill !== true || $('operations-drill-button').disabled) return;
+  const request = ++state.operationsRequest;
+  state.drillRunning = true;
+  $('operations-drill-error').hidden = true;
+  $('operations-drill-progress').hidden = false;
+  setText('operations-drill-progress', 'The isolated exercise is running. Recovery evidence will appear after the recorded checks finish.');
+  renderDrill(null);
+  $('operations-drill-empty').querySelector('strong').textContent = 'Recovery exercise in progress.';
+  $('operations-drill-empty').querySelector('p').textContent = 'The recorded results will appear when the isolated checks finish.';
+  $('operations-drill-button').closest('.operations-recovery').setAttribute('aria-busy', 'true');
+  setDrillAvailability();
+  try {
+    const data = await api('/api/operations/drill', { method: 'POST', body: '{}' });
+    if (request !== state.operationsRequest) return;
+    if (!data.summary || !data.latest_drill || data.mode !== 'local') throw new Error('The recovery result is incomplete. Refresh operational status to check the recorded outcome.');
+    state.operations = data;
+    renderOperations(data);
+    setText('operations-announcement', `Recovery drill ${operationsStatus(data.latest_drill.status).label.toLowerCase()}. Review the recorded steps and recovery evidence.`);
+  } catch (error) {
+    if (request !== state.operationsRequest) return;
+    state.operations = null;
+    setText('operations-drill-error', `${error.message || 'Unable to complete the drill.'} Refresh status to check whether a result was recorded.`);
+    $('operations-drill-error').hidden = false;
+    $('operations-drill-empty').hidden = false;
+    $('operations-drill-empty').querySelector('strong').textContent = 'Recovery result not confirmed.';
+    $('operations-drill-empty').querySelector('p').textContent = 'Refresh status to retrieve the latest recorded outcome before running another exercise.';
+    setText('operations-announcement', 'The recovery response could not be confirmed. Refresh status before running another drill.');
+  } finally {
+    if (request === state.operationsRequest) {
+      state.drillRunning = false;
+      $('operations-drill-progress').hidden = true;
+      $('operations-drill-button').closest('.operations-recovery').setAttribute('aria-busy', 'false');
+      setDrillAvailability();
+    }
+  }
+}
+
 function switchView(view, updateHash = true) {
   const views = {
     forecast: ['Demand forecast', 'See what’s ahead. Keep the right products on your shelves.'],
     replenishment: ['Replenishment planner', 'Turn demand into decisions. Find the policy that fits your store.'],
     models: ['Model lab', 'Understand the evidence behind every forecast and release.'],
+    operations: ['Operations', 'Know what is published. Catch bad data. Practice the recovery.'],
   };
   if (!views[view]) view = 'forecast';
+  const enteredOperations = view === 'operations' && state.view !== 'operations';
   state.view = view;
+  $('main').classList.toggle('operations-active', view === 'operations');
   document.querySelectorAll('.view-panel').forEach((panel) => { panel.hidden = panel.id !== `view-${view}`; });
   document.querySelectorAll('.nav-button').forEach((button) => {
     const selected = button.dataset.view === view;
@@ -507,6 +745,7 @@ function switchView(view, updateHash = true) {
   const canLoadReleases = state.mode === 'aws' || (state.catalog && !$('release-demo-button').disabled);
   $('release-panel').hidden = view !== 'models' || !canLoadReleases;
   if (view === 'models' && !state.releasesLoaded && canLoadReleases) loadReleases();
+  if (enteredOperations) loadOperations();
 }
 
 document.querySelectorAll('.nav-button').forEach((button) => button.addEventListener('click', () => switchView(button.dataset.view)));
@@ -540,6 +779,9 @@ $('assumptions-form').addEventListener('input', () => {
   setText('simulation-loading', 'Assumptions changed. Run the comparison to update your results.');
 });
 $('release-demo-button').addEventListener('click', runReleaseDemo);
+$('operations-refresh').addEventListener('click', loadOperations);
+$('operations-retry').addEventListener('click', loadOperations);
+$('operations-drill-button').addEventListener('click', runRecoveryDrill);
 window.addEventListener('hashchange', () => switchView(location.hash.slice(1), false));
 let resizeFrame;
 new ResizeObserver(() => { cancelAnimationFrame(resizeFrame); resizeFrame = requestAnimationFrame(renderChart); }).observe($('forecast-chart-container'));

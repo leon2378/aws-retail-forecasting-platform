@@ -10,6 +10,8 @@ The local Python server and AWS Lambda share the request handler in `retail_fore
 | POST | `/api/simulate` | Score three replenishment policies on a historical holdout |
 | GET | `/api/releases` | Latest model release events |
 | POST | `/api/releases/demo` | Local illustrative rejection and baseline-parity approval |
+| GET | `/api/operations` | Quality checks, replay progress, checkpoint metadata and audit evidence |
+| POST | `/api/operations/drill` | Run an isolated local recovery drill; forbidden in AWS mode |
 
 Every error response is `{"error":"message"}` with an appropriate HTTP status. Requests use JSON. POST bodies are limited to 16 KB.
 
@@ -78,3 +80,11 @@ The DynamoDB table has `pk` and `sk` string keys:
 The API requires a completed marker, an available model and a forecast row from that same run. The publisher commits the catalog, marker, release and cursor in one transaction after all rows have been written and checked. An incomplete batch is unavailable to clients. Leading-underscore fields, including held-out actuals and internal run identifiers, are removed from public forecast responses.
 
 The cloud release workflow is controlled by SageMaker; the public API rejects the local release-demo route. The initial public demo API is suitable for non-sensitive data. Add authentication before serving private operational datasets.
+
+## Operations
+
+`GET /api/operations` returns `mode`, `scope`, source labels, a `summary`, quality checks, alerts, recent `runs` and `events`, the `latest_drill`, capabilities and limitations. The summary separates historical replay dates from publication timestamps and reports lag in replay days. Unknown cloud execution state is not presented as a successful job.
+
+`POST /api/operations/drill` accepts an empty JSON object or an optional `request_token` in local mode and returns updated operations status with the drill evidence. Reusing a token returns its recorded result. It does not accept user-selected filesystem paths or arbitrary snapshot contents. The local exercise uses isolated private artifacts and preserves the working dataset. `latest_drill` contains step outcomes, measured local recovery time and proof of input rejection, hidden partial batches, idempotent retry and restored forecast hashes. AWS mode returns HTTP 403.
+
+Quality reports contain bounded check summaries rather than individual sales observations. Operations responses omit raw datasets, local artifact paths, internal scoring labels and AWS account identifiers. See [the operations guide](operations.md) for execution and evidence requirements.

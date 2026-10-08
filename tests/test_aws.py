@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from aws import jobs
 from aws.handlers import ingest
@@ -49,6 +49,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(set(inputs), {"forecast", "labels", "catalog", "evaluation"})
         self.assertIn("Steps.DailyForecast.TransformOutput", str(inputs["forecast"]))
         self.assertEqual(prepare["Arguments"]["ProcessingInputs"][0]["S3Input"]["S3Uri"], {"Get": "Parameters.SnapshotUri"})
+        self.assertIn("quality", [output["OutputName"] for output in prepare["Arguments"]["ProcessingOutputConfig"]["Outputs"]])
 
     def test_job_names_fit_service_limit_and_run_id_is_required(self):
         definition = self.definition("a" * 21)
@@ -70,6 +71,25 @@ class PipelineTests(unittest.TestCase):
 
 
 class JobIntegrationTests(unittest.TestCase):
+    def test_prepare_quarantines_invalid_snapshot_before_generating_training_channels(self):
+        from retail_forecast.quality import SnapshotQualityError
+        for raw in (b"malformed private observations", json.dumps({**dataset(), "series": []}).encode()):
+            with tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                source = root / "input/source/dataset.json"
+                source.parent.mkdir(parents=True)
+                source.write_bytes(raw)
+                output = root / "output"
+                with patch.object(jobs, "INPUT", root / "input"), patch.object(jobs, "OUTPUT", output):
+                    with self.assertRaises(SnapshotQualityError):
+                        jobs.prepare(argparse.Namespace(cutoff=196, model="seasonal"))
+                report = jobs.read_json(output / "quality/quality.json")
+                self.assertFalse(report["passed"])
+                self.assertFalse((output / "history").exists())
+                self.assertFalse((output / "labels").exists())
+                self.assertFalse((output / "requests").exists())
+                self.assertNotIn("private observations", json.dumps(report, allow_nan=False))
+
     def test_prepare_train_evaluate_and_infer_use_only_observed_history(self):
         source = dataset()
         with tempfile.TemporaryDirectory() as folder:
@@ -168,12 +188,16 @@ class Table:
             row.update(run_id=values[":run"], pending_cutoff=values[":cutoff"], started_at=values[":started"])
         elif "SET execution_arn" in UpdateExpression:
             row["execution_arn"] = values[":arn"]
+        elif "SET latest_quality" in UpdateExpression:
+            row.update(latest_quality=values[":quality"], latest_quality_status=values[":status"],
+                       quality_report_uri=values[":uri"])
         else:
             if "SET cutoff" in UpdateExpression:
                 if row.get("pending_cutoff") != values[":cutoff"]:
                     raise error("ConditionalCheckFailedException")
                 row["cutoff"] = values[":cutoff"]
-            for field in UpdateExpression.split("REMOVE ")[-1].split(", "):
+        if "REMOVE " in UpdateExpression:
+            for field in UpdateExpression.split("REMOVE ", 1)[1].split(", "):
                 row.pop(field, None)
 
 
@@ -221,13 +245,16 @@ class S3:
         return {}
 
     def get_object(self, Bucket, Key):
+        if Key not in self.objects:
+            raise error("NoSuchKey")
         return {"Body": io.BytesIO(self.objects[Key])}
 
     def put_object(self, Bucket, Key, Body, **kwargs):
         if Key in self.objects:
             raise error("PreconditionFailed")
         self.objects[Key] = Body
-        self.copies += 1
+        if "/source/" in Key:
+            self.copies += 1
 
 
 class SageMaker:
@@ -266,6 +293,80 @@ class ReplayAndPublicationTests(unittest.TestCase):
 
     def pending(self):
         return self.table.rows[("REPLAY", "STATE")]
+
+    def test_invalid_json_is_quarantined_without_start_or_advancing_active_publication(self):
+        self.table.rows[("REPLAY", "STATE")] = {"pk": "REPLAY", "sk": "STATE", "cutoff": 196}
+        active = {"pk": "CATALOG", "sk": "META", "payload": {"private_test": "active publication"}}
+        self.table.rows[("CATALOG", "META")] = copy.deepcopy(active)
+        self.s3.objects["raw/dataset.json"] = b"invalid private observations"
+        result = ingest.handler({}, None)
+        self.assertEqual(result["status"], "quarantined")
+        self.assertEqual(self.sm.starts, [])
+        self.assertEqual(self.pending()["cutoff"], 196)
+        self.assertNotIn("run_id", self.pending())
+        self.assertEqual(self.table.rows[("CATALOG", "META")], active)
+        self.assertEqual(self.pending()["latest_quality_status"], "quarantined")
+        self.assertFalse(self.pending()["latest_quality"]["passed"])
+        report_key = result["quality_report_uri"].split("test-data/", 1)[1]
+        report = json.loads(self.s3.objects[report_key])
+        self.assertEqual(report["issues"][0]["code"], "snapshot_parse")
+        self.assertNotIn("private observations", json.dumps(report))
+
+    def test_missing_product_blocks_and_corrected_snapshot_retries_same_replay_day(self):
+        from retail_forecast.storage import build_catalog
+        accepted = dataset()
+        additional = copy.deepcopy(accepted["series"][0])
+        additional["item_id"] = "FOODS_1_002"
+        accepted["series"].append(additional)
+        catalog = build_catalog(accepted, "aws", ["seasonal"])
+        self.table.rows[("CATALOG", "META")] = {"pk": "CATALOG", "sk": "META", "payload": catalog}
+        rejected = ingest.handler({}, None)
+        self.assertEqual(rejected["status"], "quarantined")
+        self.assertEqual(self.sm.starts, [])
+        self.assertIn("expected_snapshot", [issue["code"] for issue in self.pending()["latest_quality"]["issues"]])
+        self.s3.objects["raw/dataset.json"] = json.dumps(accepted).encode()
+        retried = ingest.handler({}, None)
+        self.assertEqual(retried["status"], "started")
+        self.assertEqual(retried["cutoff"], rejected["cutoff"])
+        self.assertTrue(self.pending()["latest_quality"]["passed"])
+        self.assertEqual(len(self.sm.starts), 1)
+
+    def test_missing_source_object_is_quarantined_and_can_be_retried(self):
+        self.s3.objects.pop("raw/dataset.json")
+        rejected = ingest.handler({}, None)
+        self.assertEqual(rejected["status"], "quarantined")
+        self.assertEqual(self.sm.starts, [])
+        self.assertNotIn("run_id", self.pending())
+        self.s3.objects["raw/dataset.json"] = json.dumps(dataset()).encode()
+        self.assertEqual(ingest.handler({}, None)["cutoff"], rejected["cutoff"])
+
+    def test_oversized_s3_source_is_rejected_without_reading_or_freezing_its_body(self):
+        from retail_forecast.quality import MAX_SNAPSHOT_BYTES
+        body = Mock()
+        body.read.side_effect = AssertionError("Do not allocate an oversized source body")
+        with patch.object(self.s3, "get_object", return_value={"Body": body, "ContentLength": MAX_SNAPSHOT_BYTES + 1}):
+            result = ingest.handler({}, None)
+        self.assertEqual(result["status"], "quarantined")
+        self.assertEqual(self.sm.starts, [])
+        body.read.assert_not_called()
+        body.close.assert_called_once()
+        self.assertEqual(self.s3.copies, 0)
+        self.assertEqual(self.pending()["latest_quality"]["issues"][0]["code"], "snapshot_budget")
+
+    def test_quarantine_cannot_clear_a_newer_run_lock(self):
+        self.s3.objects["raw/dataset.json"] = b"malformed snapshot"
+        original_put = self.s3.put_object
+        def concurrent_put(**kwargs):
+            original_put(**kwargs)
+            if "/quality/" in kwargs["Key"]:
+                self.pending().update(run_id="newer-run", pending_cutoff=197)
+        with patch.object(self.s3, "put_object", side_effect=concurrent_put):
+            result = ingest.handler({}, None)
+        self.assertEqual(result["status"], "concurrent_update")
+        self.assertEqual(self.pending()["run_id"], "newer-run")
+        self.assertEqual(self.pending()["pending_cutoff"], 197)
+        self.assertNotIn("latest_quality", self.pending())
+        self.assertEqual(self.sm.starts, [])
 
     def test_lost_start_response_reuses_token_and_frozen_snapshot(self):
         self.sm.lose_response = True
@@ -335,6 +436,10 @@ class ReplayAndPublicationTests(unittest.TestCase):
                 self.assertEqual(self.pending()["cutoff"], 196)
                 self.assertNotIn("run_id", self.pending())
                 self.assertEqual(self.table.rows[("CATALOG", "META")]["payload"]["min_cutoff"], 196)
+                published_catalog = self.table.rows[("CATALOG", "META")]["payload"]
+                self.assertEqual(published_catalog["published_run_id"], args.run_id)
+                self.assertEqual(published_catalog["snapshot_sha256"], self.pending()["latest_quality"]["snapshot_sha256"])
+                self.assertIn("+00:00", published_catalog["published_at"])
                 forecast = self.table.rows[("SERIES#CA_1#FOODS_1_001", "FORECAST#000000196#seasonal")]["payload"]
                 self.assertEqual(forecast["_run_id"], args.run_id)
                 self.assertEqual(len(forecast["_actuals"]), 28)

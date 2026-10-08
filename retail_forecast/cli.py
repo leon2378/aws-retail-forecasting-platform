@@ -2,13 +2,30 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
+from uuid import uuid4
 
 
 def write_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, allow_nan=False), encoding="utf-8")
+    raw = json.dumps(value, indent=2, allow_nan=False).encode("utf-8")
+    temporary = path.with_name(path.name + "." + uuid4().hex + ".tmp")
+    try:
+        with temporary.open("wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def import_snapshot(path, dataset):
+    """Check explicit imports before replacing the importer-owned source file."""
+    from .storage import LocalRepository
+    LocalRepository.import_snapshot(path, dataset)
 
 
 def main(argv=None):
@@ -39,6 +56,18 @@ def main(argv=None):
     forecast.add_argument("--output", default="data/forecast.json")
     demo = commands.add_parser("release-demo", help="Record explicit rejected / approved workflow examples")
     demo.add_argument("--data-dir", default="data")
+    for name, help_text, output in (
+        ("operations", "Inspect persisted local operations and quality checks", "build/operations-status.json"),
+        ("recovery-drill", "Run an isolated local interruption, retry and rollback drill", "build/recovery-drill.json"),
+    ):
+        command = commands.add_parser(name, help=help_text)
+        command.add_argument("--data-dir", default="data")
+        command.add_argument("--output", default=output)
+    quality = commands.add_parser("validate-snapshot", help="Check a normalized snapshot without starting ML")
+    quality.add_argument("snapshot", type=Path)
+    quality.add_argument("--cutoff", type=int)
+    quality.add_argument("--expected", type=Path, help="Accepted snapshot defining expected store/product identities")
+    quality.add_argument("--output", default="build/snapshot-quality.json")
     args = parser.parse_args(argv)
     try:
         if args.command == "serve":
@@ -47,7 +76,7 @@ def main(argv=None):
         elif args.command == "import-m5":
             from .data import import_m5
             dataset = import_m5(args.folder, stores=args.stores, max_items=args.max_items)
-            write_json(args.output, dataset)
+            import_snapshot(args.output, dataset)
             print(f"Imported {len(dataset['series'])} M5 series, {dataset['total_days']} days -> {args.output}")
         elif args.command == "download-m5":
             from .download import download_m5
@@ -56,7 +85,7 @@ def main(argv=None):
             if args.import_data:
                 from .data import import_m5
                 dataset = import_m5(args.folder, stores=args.stores, max_items=args.max_items)
-                write_json(args.output, dataset)
+                import_snapshot(args.output, dataset)
                 print(f"Imported {len(dataset['series'])} M5 series, {dataset['total_days']} days -> {args.output}")
         elif args.command == "forecast":
             from .storage import LocalRepository
@@ -65,10 +94,34 @@ def main(argv=None):
             result = repo.forecast(args.store, args.item, cutoff, args.model)
             write_json(args.output, {k: v for k, v in result.items() if not k.startswith("_")})
             print(f"Saved {args.model} forecast and chronological backtests -> {args.output}")
+        elif args.command in ("operations", "recovery-drill"):
+            from .storage import LocalRepository
+            repository = LocalRepository(args.data_dir)
+            result = repository.operations() if args.command == "operations" else repository.recovery_drill()
+            write_json(args.output, result)
+            if args.command == "recovery-drill":
+                drill = result["latest_drill"]
+                print(f"Local recovery drill: {drill['status']} -> {args.output}")
+                if drill["status"] != "completed":
+                    raise SystemExit(1)
+            else:
+                print(f"Local operations: {result['summary']['status']} -> {args.output}")
+        elif args.command == "validate-snapshot":
+            from .quality import read_snapshot
+            expected = None
+            if args.expected is not None:
+                expected, contract_report = read_snapshot(args.expected)
+                if not contract_report["passed"]:
+                    raise ValueError("The expected snapshot does not pass its quality checks")
+            _, report = read_snapshot(args.snapshot, cutoff=args.cutoff, expected=expected)
+            write_json(args.output, report)
+            print(f"Snapshot quality: {'PASS' if report['passed'] else 'REJECT'} -> {args.output}")
+            if not report["passed"]:
+                raise SystemExit(1)
         else:
             from .storage import LocalRepository
             result = LocalRepository(args.data_dir).demo_releases()
             for release in result["releases"][-2:]:
                 print(f"{release['status']}: {release['model']} — {release['reason']}")
-    except (ValueError, LookupError, FileNotFoundError, RuntimeError) as exc:
+    except (ValueError, LookupError, OSError, RuntimeError) as exc:
         parser.error(str(exc))

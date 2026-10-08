@@ -80,6 +80,11 @@ The environments use different dependency versions, recorded in each rehearsal r
 - **Model comparison:** a four-week same-weekday mean versus a fitted XGBoost Poisson model with lag, rolling-statistic and calendar features.
 - **Inventory simulation:** fixed-quantity ordering, forecast order-up-to, and a buffered policy, with configurable initial stock, lead time, review period and cost assumptions.
 - **Release demonstration:** using the current dataset, a deliberately degraded candidate fails a measured holdout baseline gate and a baseline clone passes at parity. It writes an illustrative local audit log and does not promote a trained model, change the application model or claim improvement.
+- **Operations:** inspect replay progress, the last verified seasonal checkpoint, input quality and persisted audit events. An isolated local recovery drill exercises invalid input, interrupted publication, idempotent retry and rollback with forecast hashes as evidence.
+
+See [the operations guide](docs/operations.md) for snapshot validation, local recovery commands and the distinction between local checks and verified AWS execution.
+
+![SupplySight operations and recovery evidence using labelled synthetic data](docs/images/operations-demo.png)
 
 ## Evaluation and interpretation
 
@@ -123,7 +128,9 @@ The Linux image's `/ping` and `/invocations` HTTP routes were also checked again
 flowchart LR
   Source[M5 archive in S3] --> Ingest[EventBridge → ingestion Lambda]
   Ingest --> Snapshot[Versioned S3 snapshot]
-  Snapshot --> Pipeline[SageMaker Pipeline]
+  Snapshot --> Quality{Snapshot quality}
+  Quality -->|Pass| Pipeline[SageMaker Pipeline]
+  Quality -->|Reject| Quarantine[Quarantine report · previous forecast retained]
   Pipeline --> Prep[Prepare → train → backtest]
   Prep --> Gate{Release checks}
   Gate -->|Reject| Rejected[Model Registry: Rejected]
@@ -153,6 +160,7 @@ Confirm the regional quotas and provisioning-role permissions in the deployment 
 | `retail_forecast/forecast.py` | Training, portable model artifacts, inference and backtests |
 | `retail_forecast/inventory.py` | Replenishment simulation |
 | `retail_forecast/api.py`, `storage.py` | Shared API contract and local/DynamoDB repositories |
+| `retail_forecast/quality.py`, `operations.py` | Snapshot gate, verified checkpoints, audit journal and isolated recovery drill |
 | `aws/` | Lambda handlers, SageMaker pipeline and job/image entry points |
 | `infra/` | Terraform infrastructure |
 | `tests/` | Automated behavior and integration checks |
