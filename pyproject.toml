@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shelfcast"
+version = "0.1.0"
+description = "Retail demand forecasting, historical replay, and replenishment simulations on AWS"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+ml = ["xgboost>=2.1,<4", "numpy>=1.26,<3"]
+aws = ["boto3>=1.35,<2"]
+tracking = ["clearml>=1.16,<3"]
+
+[project.scripts]
+shelfcast = "retail_forecast.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["retail_forecast*", "aws*"]

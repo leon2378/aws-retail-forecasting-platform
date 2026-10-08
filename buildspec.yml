@@ -1,0 +1,24 @@
+version: 0.2
+phases:
+  install:
+    runtime-versions:
+      python: 3.11
+    commands:
+      - pip install -e '.[ml,aws]'
+  pre_build:
+    commands:
+      - python -m unittest discover -s tests -v
+      - aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin "${ECR_URI%%/*}"
+      - export IMAGE_URI="$ECR_URI:build-$CODEBUILD_BUILD_NUMBER"
+  build:
+    commands:
+      - docker build -t "$IMAGE_URI" .
+      - docker push "$IMAGE_URI"
+      - python -m aws.package
+      - python -m aws.pipeline --name "$PROJECT_NAME" --role-arn "$SAGEMAKER_ROLE_ARN" --image-uri "$IMAGE_URI" --bucket "$DATA_BUCKET" --table-name "$RESULTS_TABLE" --model-group "$PROJECT_NAME" --instance-type "$SAGEMAKER_INSTANCE_TYPE"
+artifacts:
+  files:
+    - build/lambda.zip
+    - build/pipeline.json
+    - frontend/**/*
+    - aws/buildspec-deploy.yml

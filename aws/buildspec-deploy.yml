@@ -1,0 +1,11 @@
+version: 0.2
+phases:
+  build:
+    commands:
+      - aws lambda update-function-code --function-name "$PROJECT_NAME-api" --zip-file fileb://build/lambda.zip
+      - aws lambda wait function-updated --function-name "$PROJECT_NAME-api"
+      - aws lambda update-function-code --function-name "$PROJECT_NAME-ingest" --zip-file fileb://build/lambda.zip
+      - aws lambda wait function-updated --function-name "$PROJECT_NAME-ingest"
+      - aws sagemaker update-pipeline --pipeline-name "$PROJECT_NAME" --role-arn "$SAGEMAKER_ROLE_ARN" --pipeline-definition file://build/pipeline.json
+      - aws s3 sync frontend/ "s3://$FRONTEND_BUCKET/" --cache-control max-age=300
+      - aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION_ID" --paths '/*'

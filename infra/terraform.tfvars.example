@@ -1,0 +1,13 @@
+region = "ap-southeast-2"
+project = "retail-forecast"
+schedule_enabled = false
+initial_cutoff = 196
+candidate_model = "seasonal"
+sagemaker_instance_type = "ml.m5.xlarge"
+# After the foundation is applied and the model image is pushed:
+# pipeline_definition_file = "../build/pipeline.json"
+enable_delivery = false
+enable_clearml = false
+# clearml_vpc_id = "vpc-..."
+# clearml_subnet_id = "subnet-..."
+# clearml_ami_id = "ami-..." # reviewed server image; must include SSM Agent
