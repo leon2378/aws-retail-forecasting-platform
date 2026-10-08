@@ -3,11 +3,15 @@ phases:
   install:
     runtime-versions:
       python: 3.11
+      nodejs: 22
     commands:
       - pip install -e '.[ml,aws]'
   pre_build:
     commands:
       - python -m unittest discover -s tests -v
+      - node --check frontend/app.js
+      - node --check frontend/auth.js
+      - node --test tests/frontend_auth.test.mjs tests/frontend_access.test.mjs
       - aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin "${ECR_URI%%/*}"
       - export IMAGE_URI="$ECR_URI:build-$CODEBUILD_BUILD_NUMBER"
   build:

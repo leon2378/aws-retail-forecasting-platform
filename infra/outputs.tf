@@ -34,3 +34,18 @@ output "ingest_function_name" {
 output "clearml_instance_id" {
   value = try(aws_instance.clearml[0].id, null)
 }
+output "cognito_user_pool_id" {
+  description = "Pool for IAM-authorized user invitations and viewer/planner group assignment."
+  value       = aws_cognito_user_pool.app.id
+}
+output "auth_public_settings" {
+  description = "Public sign-in settings; this application client has no secret."
+  value = {
+    issuer       = local.auth_issuer
+    client_id    = aws_cognito_user_pool_client.web.id
+    domain       = local.auth_domain
+    callback_url = local.auth_callback_url
+    logout_url   = local.auth_logout_url
+    scopes       = local.auth_scopes
+  }
+}

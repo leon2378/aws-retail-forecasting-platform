@@ -108,3 +108,31 @@ variable "clearml_instance_type" {
   default = "t3.xlarge"
 
 }
+
+variable "auth_additional_callback_urls" {
+  type        = list(string)
+  default     = []
+  description = "Optional additional sign-in redirect roots, including explicit loopback previews. Registration only: the application's default callback remains the CloudFront root."
+  validation {
+    condition = length(var.auth_additional_callback_urls) <= 20 && alltrue([
+      for url in var.auth_additional_callback_urls :
+      can(regex("^https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?/$", url)) ||
+      can(regex("^http://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]{1,5})?/$", url))
+    ])
+    error_message = "Use at most 20 HTTPS root URLs ending in /, or explicit localhost, 127.0.0.1 or [::1] HTTP roots for testing. Queries, fragments and remote HTTP callbacks are not allowed."
+  }
+}
+
+variable "auth_additional_logout_urls" {
+  type        = list(string)
+  default     = []
+  description = "Optional additional sign-out redirect roots. Registration only: the application's default sign-out destination remains the CloudFront root."
+  validation {
+    condition = length(var.auth_additional_logout_urls) <= 20 && alltrue([
+      for url in var.auth_additional_logout_urls :
+      can(regex("^https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?/$", url)) ||
+      can(regex("^http://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]{1,5})?/$", url))
+    ])
+    error_message = "Use at most 20 HTTPS root URLs ending in /, or explicit localhost, 127.0.0.1 or [::1] HTTP roots for testing. Queries, fragments and remote HTTP sign-out redirects are not allowed."
+  }
+}

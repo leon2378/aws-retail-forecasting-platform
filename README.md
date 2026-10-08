@@ -20,6 +20,10 @@ python -m retail_forecast serve --port 8000
 
 Open [http://127.0.0.1:8000](http://127.0.0.1:8000). Stop the server with Ctrl+C.
 
+The sign-in screen provides a **local access preview**. Choose Viewer to inspect forecasts and operations, or Planner to run inventory comparisons and local demonstrations. These generated identities exercise server-enforced permissions; they do not authenticate real users. Sessions expire and are cleared when the server restarts. See [the sign-in guide](docs/authentication.md) for the Cognito deployment configuration and security boundaries.
+
+![SupplySight local access preview with Viewer and Planner permissions](docs/images/signin-demo.png)
+
 To enable real XGBoost training and the AWS tooling:
 
 ```powershell
@@ -81,6 +85,7 @@ The environments use different dependency versions, recorded in each rehearsal r
 - **Inventory simulation:** fixed-quantity ordering, forecast order-up-to, and a buffered policy, with configurable initial stock, lead time, review period and cost assumptions.
 - **Release demonstration:** using the current dataset, a deliberately degraded candidate fails a measured holdout baseline gate and a baseline clone passes at parity. It writes an illustrative local audit log and does not promote a trained model, change the application model or claim improvement.
 - **Operations:** inspect replay progress, the last verified seasonal checkpoint, input quality and persisted audit events. An isolated local recovery drill exercises invalid input, interrupted publication, idempotent retry and rollback with forecast hashes as evidence.
+- **Sign-in and permissions:** Viewer access for inspection and Planner access for simulations and local demonstrations, enforced by the API. Cognito hosted sign-in and JWT authorization are prepared in Terraform; the local role selector is explicitly a preview.
 
 See [the operations guide](docs/operations.md) for snapshot validation, local recovery commands and the distinction between local checks and verified AWS execution.
 
@@ -104,9 +109,14 @@ All savings are **simulation results**, not realized business savings. The best 
 ./.venv/Scripts/python.exe -m retail_forecast forecast --store CA_1 --item HOBBIES_1_001 --model xgboost
 ./.venv/Scripts/python.exe -m retail_forecast release-demo
 ./.venv/Scripts/python.exe -m unittest discover -s tests -v
+node --check frontend/app.js
+node --check frontend/auth.js
+node --test tests/frontend_auth.test.mjs tests/frontend_access.test.mjs
 ```
 
 Forecast exports exclude held-out future actuals. Tests cover leakage boundaries, chronological splits, dataset validation, stock flows, edge cases, API input validation and publication safeguards. Optional XGBoost tests skip when that dependency is absent; use the ML extra to run them.
+
+Authentication checks cover denied anonymous/viewer actions, session expiry, CSRF protection and verified cloud claim boundaries. The current suite passes 129 Python tests on Windows and Linux, 22 frontend tests and four offline infrastructure tests. Frontend behavior tests require Node.js 22 or newer; the website itself still needs no Node.js runtime or build. These local checks do not verify a deployed identity provider.
 
 Rehearse the ML job stages against your imported M5 archive before creating cloud resources:
 
@@ -140,6 +150,9 @@ flowchart LR
   Publish --> Results[DynamoDB]
   Results --> API[API Gateway + Lambda]
   API --> UI[S3 + CloudFront frontend]
+  UI --> SignIn[Cognito hosted sign-in]
+  SignIn --> Auth[JWT validation + assigned role]
+  Auth --> API
   Prep -. optional experiments .-> ClearML[ClearML on EC2 + S3 artifacts]
 ```
 
@@ -155,7 +168,8 @@ Confirm the regional quotas and provisioning-role permissions in the deployment 
 
 | Path | Purpose |
 |---|---|
-| `frontend/` | Responsive application, SVG charts and API client |
+| `frontend/` | Responsive application, SVG charts and PKCE sign-in/API client |
+| `retail_forecast/auth.py` | Role authorization, verified cloud claims and local sessions |
 | `retail_forecast/data.py` | Synthetic generator and M5 importer |
 | `retail_forecast/forecast.py` | Training, portable model artifacts, inference and backtests |
 | `retail_forecast/inventory.py` | Replenishment simulation |
@@ -167,6 +181,6 @@ Confirm the regional quotas and provisioning-role permissions in the deployment 
 
 ## Next production milestones
 
-Validate one AWS replay end to end, then expand genuine M5 evaluation beyond the documented subset. Before broader use, add authentication for non-public data, representative global modeling and hierarchy-aware evaluation, cost/load testing, drift monitoring, and tests on actual operational inventory data. All deployed application infrastructure can stay in AWS; local development is intentionally independent.
+Validate Cognito sign-in and one AWS replay end to end, then expand genuine M5 evaluation beyond the documented subset. Before broader use, add representative global modeling and hierarchy-aware evaluation, cost/load testing, drift monitoring and tests on actual operational inventory data. All deployed application infrastructure can stay in AWS; local development is intentionally independent.
 
 References: [SageMaker Pipelines](https://docs.aws.amazon.com/sagemaker/latest/dg/pipelines.html), [batch inference](https://docs.aws.amazon.com/sagemaker/latest/dg/batch-transform.html), [model approval](https://docs.aws.amazon.com/sagemaker/latest/dg/model-registry-approve.html), and [M5 data](https://www.kaggle.com/competitions/m5-forecasting-accuracy/data).

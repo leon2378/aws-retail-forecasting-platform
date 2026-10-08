@@ -6,6 +6,8 @@ SupplySight's Operations view provides evidence about forecast availability, inp
 
 Start the local server and open the **Operations** tab. The view is independent of store and product selection and remains accessible before a first AWS forecast is published.
 
+Sign in first. Viewer can inspect Operations; Planner can run the local recovery action. The local role selector is an access preview, and Python commands run with the workspace owner's access. See [the sign-in guide](authentication.md).
+
 The dashboard reports the accepted snapshot, seasonal checkpoint, publication time, replay cutoff, expected replay progress, quality checks and recent audit events. Historical source dates and execution timestamps have different meanings: M5 observations from 2016 are not automatically stale. Replay lag compares expected and published historical days.
 
 The dashboard does not invent latency, availability or completed AWS job statistics. An unverified or pending cloud execution is identified as such. Cloud access is read-only; the recovery action is disabled in AWS mode.

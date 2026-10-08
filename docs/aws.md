@@ -4,6 +4,8 @@ This runbook targets **ap-southeast-2 (Sydney)**. The application works locally 
 
 The completed smoke checks verified resource configuration, HTTPS frontend delivery, Lambda health and release routes, same-origin API routing, the expected empty-catalog response and rejection of the public release-demo action. They did not exercise SageMaker training, processing, Batch Transform or forecast publication. No ML pipeline or model version was published during that foundation test. The Linux image build, offline ML rehearsal and inference HTTP protocol have since passed local validation. Live SageMaker execution, model registration and DynamoDB publication remain unverified; optional delivery, ClearML and scheduled ingestion remain disabled.
 
+Those live smoke checks predate the sign-in change. The current Terraform adds Cognito hosted sign-in, administrator-assigned Viewer/Planner groups and JWT-protected application routes. Its authentication flow has been prepared locally and needs a new deployed check. Read [the authentication guide](authentication.md) before inviting users or exposing non-public data.
+
 ## Rehearse the ML workflow locally
 
 Install the ML/AWS extras and import M5 as described in the [main README](../README.md). Then run the job rehearsal without AWS credentials:
@@ -40,7 +42,7 @@ The image's Prepare, Train and Evaluate CLI stages also passed a 36-series seaso
 
 ## Prerequisites
 
-Use Python 3.11+, AWS CLI v2, Terraform 1.6+, and Docker with Linux containers for a local image build. CodeBuild can build the Linux image instead. Authenticate through a normal AWS profile or IAM Identity Center; do not put access keys in this repository, Terraform variables or images.
+Use Python 3.11+, Node.js 22+ for frontend behavior tests, AWS CLI v2, Terraform 1.11+, and Docker with Linux containers for a local image build. CodeBuild can build the Linux image instead. Authenticate through a normal AWS profile or IAM Identity Center; do not put access keys in this repository, Terraform variables or images.
 
 ```powershell
 $env:AWS_DEFAULT_REGION = 'ap-southeast-2'
@@ -49,11 +51,15 @@ aws configure list
 python -m venv .venv
 ./.venv/Scripts/python.exe -m pip install -e '.[ml,aws]'
 ./.venv/Scripts/python.exe -m unittest discover -s tests -v
+node --test tests/frontend_auth.test.mjs tests/frontend_access.test.mjs
 ./.venv/Scripts/python.exe -m aws.package
 terraform -chdir=infra init -backend=false
 terraform -chdir=infra fmt -check
 terraform -chdir=infra validate
+terraform -chdir=infra test
 ```
+
+The authentication infrastructure tests use a mock provider and plan-only runs. They validate configuration without contacting AWS or creating resources; they do not establish deployed Cognito behavior.
 
 The default job type is `ml.m5.xlarge`. Check the three distinct SageMaker quotas in Sydney. A zero limit blocks that job even if your IAM permissions allow it:
 
@@ -67,7 +73,7 @@ These codes identify `ml.m5.xlarge` **training**, **processing**, and **transfor
 
 The ingestion Lambda uses the shared account concurrency pool by default. Its DynamoDB conditional lock and SageMaker request token coordinate overlapping invocations. Small accounts can have insufficient concurrency to reserve even one invocation: AWS requires 100 units to remain unreserved. Optionally add `reserved_concurrent_executions = 1` to the ingestion function only when the account has enough unreserved capacity, as explained in [Lambda's concurrency documentation](https://docs.aws.amazon.com/lambda/latest/dg/configuration-concurrency.html).
 
-The deployment principal needs permission to manage the resources declared in `infra/`, create/pass the execution roles, and read AWS-managed CloudFront cache, origin-request and response-header policies. In particular, lacking `cloudfront:GetCachePolicy` can block even a Terraform plan. The application roles created by Terraform are narrowly scoped and are not a replacement for the deployment principal's permissions.
+The deployment principal needs permission to manage the resources declared in `infra/`, create/pass the execution roles, and read AWS-managed CloudFront cache, origin-request and response-header policies. This now includes the Cognito user pool, domain, browser client, groups and resource server. In particular, lacking `cloudfront:GetCachePolicy` can block even a Terraform plan. User invitations and group assignment need separate operator Cognito permissions; application execution roles cannot administer users. The application roles created by Terraform are narrowly scoped and are not a replacement for the deployment principal's permissions.
 
 Terraform uses local state initially. Keep state and plans private; both can contain resource details. For shared or repeatable deployments, configure an encrypted, versioned S3 backend with state locking in an existing dedicated state bucket before applying. Do not commit state, tfvars, plans or credentials. The provider lock file should be committed.
 
@@ -137,7 +143,7 @@ aws s3 sync frontend/ "s3://$frontendBucket/" --cache-control max-age=300
 aws cloudfront create-invalidation --distribution-id $distributionId --paths '/*'
 ```
 
-The frontend uses same-origin `/api/*` requests. CloudFront routes those paths to API Gateway with caching disabled and forwards query strings and request bodies. Static files are served from private S3 through origin access control. A separate `API_BASE` is unnecessary for this deployment. The API is a public, throttled demo; add authentication before serving non-public information.
+The frontend uses same-origin `/api/*` requests. CloudFront routes those paths to API Gateway with caching disabled and forwards authorization, query strings and request bodies. Static files are served from private S3 through origin access control. A separate `API_BASE` is unnecessary for this deployment. Health and sign-in configuration are public; other application routes require Cognito access tokens and verified Viewer/Planner membership. Anonymous forecast/catalog requests return 401 rather than revealing publication status.
 
 The frontend requests `/api/health` before the catalog so an empty AWS workspace is identified correctly. In AWS mode the model lab displays published release history, with an empty state when no decisions exist. Its release-demo action is disabled; the API also rejects that local-only action.
 
@@ -179,8 +185,10 @@ $executionArn = (Get-Content build/ingest-response.json | ConvertFrom-Json).exec
 aws sagemaker describe-pipeline-execution --pipeline-execution-arn $executionArn
 aws sagemaker list-pipeline-execution-steps --pipeline-execution-arn $executionArn
 Invoke-RestMethod "$frontendUrl/api/health"
-Invoke-RestMethod "$frontendUrl/api/catalog"
+Invoke-RestMethod "$frontendUrl/api/auth/config"
 ```
+
+Sign in through the frontend with an operator-invited user assigned to Viewer or Planner, then inspect the catalog and forecast there. Verify anonymous requests are denied, Viewer cannot run a simulation, and Planner can. Do not paste access tokens into chat or record them in reports. Test expired sessions and sign-out before claiming the deployed authentication flow works.
 
 A passing run registers an Approved version, creates a batch model, forecasts the available models and publishes all selected series. Forecast rows are visible only after the completed marker, catalog and replay cursor commit together. A rejected candidate registers a Rejected version and audit entry, and keeps the cursor unchanged. The gate permits seasonal parity by default; an approval is not evidence of improved accuracy. XGBoost must meet measured WAPE and coverage thresholds. The local model lab's explicitly labeled rejection/approval demonstration is separate from AWS model promotion.
 

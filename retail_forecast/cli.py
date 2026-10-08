@@ -32,7 +32,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="shelfcast")
     commands = parser.add_subparsers(dest="command", required=True)
     server = commands.add_parser("serve", help="Run the local application")
-    server.add_argument("--host", default="127.0.0.1")
+    server.add_argument("--host", default="127.0.0.1", help="Loopback address only for the local access preview")
     server.add_argument("--port", type=int, default=8000)
     server.add_argument("--data-dir", default="data")
     importer = commands.add_parser("import-m5", help="Import locally downloaded M5 CSV files")

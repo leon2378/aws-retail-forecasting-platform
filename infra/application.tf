@@ -28,7 +28,18 @@ resource "aws_lambda_function" "api" {
   timeout          = 20
   memory_size      = 256
   environment {
-    variables = { RESULTS_TABLE = aws_dynamodb_table.results.name, DATA_BUCKET = aws_s3_bucket.app["data"].id, PIPELINE_NAME = local.prefix }
+    variables = {
+      RESULTS_TABLE     = aws_dynamodb_table.results.name
+      DATA_BUCKET       = aws_s3_bucket.app["data"].id
+      PIPELINE_NAME     = local.prefix
+      AUTH_ENABLED      = "true"
+      AUTH_ISSUER       = local.auth_issuer
+      AUTH_CLIENT_ID    = aws_cognito_user_pool_client.web.id
+      AUTH_DOMAIN       = local.auth_domain
+      AUTH_CALLBACK_URL = local.auth_callback_url
+      AUTH_LOGOUT_URL   = local.auth_logout_url
+      AUTH_SCOPES       = join(" ", local.auth_scopes)
+    }
   }
   depends_on = [aws_cloudwatch_log_group.api, aws_iam_role_policy.api]
 
@@ -67,9 +78,12 @@ resource "aws_apigatewayv2_integration" "api" {
 }
 resource "aws_apigatewayv2_route" "api" {
 
-  api_id    = aws_apigatewayv2_api.api.id
-  route_key = "ANY /api/{proxy+}"
-  target    = "integrations/${aws_apigatewayv2_integration.api.id}"
+  api_id               = aws_apigatewayv2_api.api.id
+  route_key            = "ANY /api/{proxy+}"
+  target               = "integrations/${aws_apigatewayv2_integration.api.id}"
+  authorization_type   = "JWT"
+  authorizer_id        = aws_apigatewayv2_authorizer.app.id
+  authorization_scopes = ["retail/read"]
 
 }
 resource "aws_apigatewayv2_stage" "api" {

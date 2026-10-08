@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 from .inventory import compare_policies
+from .auth import anonymous_session, authorize
 from .storage import MIN_CUTOFF
 
 DEFAULT_ASSUMPTIONS = {"initial_stock": 120, "lead_time": 7, "review_period": 7, "safety_days": 3,
@@ -64,10 +65,17 @@ def _assumptions(body):
     return assumptions
 
 
-def handle_request(method, path, query, body, repository):
+def handle_request(method, path, query, body, repository, principal=None, auth_config=None):
     try:
+        denied = authorize(method, path, principal)
+        if denied is not None:
+            return denied
         if method == "GET" and path == "/api/health":
             return 200, {"status": "ok", "mode": repository.mode}
+        if method == "GET" and path == "/api/auth/config":
+            return 200, auth_config or {"mode": "unconfigured", "enabled": False}
+        if method == "GET" and path == "/api/auth/session":
+            return 200, principal.session() if principal is not None else anonymous_session()
         if method == "GET" and path == "/api/catalog":
             return 200, repository.catalog()
         if method == "GET" and path == "/api/operations":

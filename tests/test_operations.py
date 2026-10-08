@@ -7,9 +7,12 @@ import unittest
 from unittest.mock import patch
 
 from retail_forecast.api import handle_request
+from retail_forecast.auth import Principal
 from retail_forecast.data import demo_dataset
 from retail_forecast.operations import CheckpointStore, InterruptedBatch, LocalOperations
 from retail_forecast.storage import DynamoRepository, LocalRepository, build_forecast_payload
+
+PLANNER = Principal("test-planner", "planner", "Planner fixture", "local_demo")
 
 
 def fixture():
@@ -33,7 +36,7 @@ class OperationsTests(unittest.TestCase):
             series = dataset["series"][0]
             before = repository.forecast(series["store_id"], series["item_id"], 224, "seasonal")
             snapshot_before = repository.operations()["summary"]["snapshot_hash"]
-            status, result = handle_request("POST", "/api/operations/drill", {}, {"request_token": "test-drill"}, repository)
+            status, result = handle_request("POST", "/api/operations/drill", {}, {"request_token": "test-drill"}, repository, principal=PLANNER)
             self.assertEqual(status, 200)
             drill = result["latest_drill"]
             self.assertEqual(drill["status"], "completed", drill)
@@ -210,7 +213,7 @@ class OperationsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "integrity"):
                 LocalRepository(temporary, dataset=dataset)
             first = dataset["series"][0]
-            status, _ = handle_request("GET", "/api/forecast", {"store": first["store_id"], "item": first["item_id"]}, None, repository)
+            status, _ = handle_request("GET", "/api/forecast", {"store": first["store_id"], "item": first["item_id"]}, None, repository, principal=PLANNER)
             self.assertEqual(status, 400)
 
     def test_concurrent_repository_writers_rejected_and_status_refreshes(self):
@@ -232,9 +235,9 @@ class OperationsTests(unittest.TestCase):
             repository = LocalRepository(temporary, dataset=fixture())
             for body in (None, [], {"directory": "outside"}, {"request_token": "../escape"},
                          {"request_token": True}, {"request_token": False}, {"request_token": ""}, {"request_token": 0}):
-                status, _ = handle_request("POST", "/api/operations/drill", {}, body, repository)
+                status, _ = handle_request("POST", "/api/operations/drill", {}, body, repository, principal=PLANNER)
                 self.assertEqual(status, 400)
-            status, _ = handle_request("POST", "/api/operations/drill", {}, {}, DynamoRepository(table=object()))
+            status, _ = handle_request("POST", "/api/operations/drill", {}, {}, DynamoRepository(table=object()), principal=PLANNER)
             self.assertEqual(status, 403)
 
     def test_existing_server_refreshes_dataset_after_explicit_cli_import(self):
@@ -376,7 +379,7 @@ class OperationsTable:
 class AWSOperationsTests(unittest.TestCase):
     def test_empty_cloud_operations_have_unknown_quality_and_no_local_fallback(self):
         table = OperationsTable()
-        status, result = handle_request("GET", "/api/operations", {}, None, DynamoRepository(table=table))
+        status, result = handle_request("GET", "/api/operations", {}, None, DynamoRepository(table=table), principal=PLANNER)
         self.assertEqual(status, 200)
         self.assertEqual(result["summary"]["status"], "awaiting_publication")
         self.assertIsNone(result["quality"]["passed"])

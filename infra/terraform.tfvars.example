@@ -8,6 +8,14 @@ sagemaker_instance_type = "ml.m5.xlarge"
 # pipeline_definition_file = "../build/pipeline.json"
 enable_delivery = false
 enable_clearml = false
+# Cognito sign-in is mandatory for AWS API results and simulations. Users and
+# viewer/planner memberships are invited/assigned outside Terraform by an operator.
+# The CloudFront root is automatically registered for sign-in and sign-out.
+# Explicit optional callback roots for a later Cognito-connected local preview:
+# Registration does not switch the app's default CloudFront callback. A preview
+# must use matching reviewed callback/sign-out settings in its auth configuration.
+# auth_additional_callback_urls = ["http://127.0.0.1:8000/"]
+# auth_additional_logout_urls = ["http://127.0.0.1:8000/"]
 # clearml_vpc_id = "vpc-..."
 # clearml_subnet_id = "subnet-..."
 # clearml_ami_id = "ami-..." # reviewed server image; must include SSM Agent

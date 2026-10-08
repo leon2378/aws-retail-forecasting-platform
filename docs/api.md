@@ -5,6 +5,10 @@ The local Python server and AWS Lambda share the request handler in `retail_fore
 | Method | Route | Purpose |
 |---|---|---|
 | GET | `/api/health` | Server status and local/AWS mode |
+| GET | `/api/auth/config` | Public local-preview or Cognito sign-in configuration |
+| GET | `/api/auth/session` | Current identity and permissions; cloud requires a valid access token |
+| POST | `/api/auth/login` | Loopback-only local role preview; unavailable in AWS |
+| POST | `/api/auth/logout` | End the local cookie session; cloud uses Cognito hosted logout |
 | GET | `/api/catalog` | Data provenance, stores, products, model availability and replay bounds |
 | GET | `/api/forecast` | Historical observations, 28 predictions, backtests and training metadata |
 | POST | `/api/simulate` | Score three replenishment policies on a historical holdout |
@@ -14,6 +18,14 @@ The local Python server and AWS Lambda share the request handler in `retail_fore
 | POST | `/api/operations/drill` | Run an isolated local recovery drill; forbidden in AWS mode |
 
 Every error response is `{"error":"message"}` with an appropriate HTTP status. Requests use JSON. POST bodies are limited to 16 KB.
+
+## Authorization
+
+Health and sign-in configuration are public. All forecast, catalog, release and operations routes require a signed-in identity. Viewer and Planner can read; only Planner can invoke simulation, local recovery and local release demonstrations. AWS continues to reject the two local demonstrations even for a Planner. The API returns 401 for missing/expired authentication and 403 for forbidden actions.
+
+Local sign-in accepts only `{"role":"viewer"}` or `{"role":"planner"}`. These are generated preview identities, not real-user credentials. The server returns an opaque HTTP-only cookie and session information, including a CSRF token. Supply the same-origin `Origin` and `X-CSRF-Token` headers for subsequent local POST requests; the browser client manages these automatically.
+
+Cloud requests use an access token in `Authorization: Bearer …`. API Gateway verifies JWTs; Lambda authorizes the verified group's permissions. Client role headers and request parameters never establish access. See [the authentication guide](authentication.md) for PKCE, session handling and the limits of the local preview.
 
 ## Selection and replay
 
@@ -79,7 +91,7 @@ The DynamoDB table has `pk` and `sk` string keys:
 
 The API requires a completed marker, an available model and a forecast row from that same run. The publisher commits the catalog, marker, release and cursor in one transaction after all rows have been written and checked. An incomplete batch is unavailable to clients. Leading-underscore fields, including held-out actuals and internal run identifiers, are removed from public forecast responses.
 
-The cloud release workflow is controlled by SageMaker; the public API rejects the local release-demo route. The initial public demo API is suitable for non-sensitive data. Add authentication before serving private operational datasets.
+The cloud release workflow is controlled by SageMaker; the application API rejects the local release-demo route. Terraform protects application routes with Cognito-backed JWT authorization. Cloud sign-in and role enforcement still require deployed end-to-end verification before serving private operational datasets.
 
 ## Operations
 

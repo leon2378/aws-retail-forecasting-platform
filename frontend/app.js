@@ -1,3 +1,5 @@
+import { createAuthClient } from './auth.js';
+
 const $ = (id) => document.getElementById(id);
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const COLORS = { actual: '#91a49d', forecast: '#286b5d', baseline: '#d59460', band: '#dcebdc', grid: '#e9eee5', text: '#92a08c' };
@@ -11,6 +13,14 @@ const isoDate = (date) => date.toISOString().slice(0, 10);
 const formatDate = (value, year = false) => parseDate(value).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', ...(year ? { year: 'numeric' } : {}), timeZone: 'UTC' });
 const setText = (id, value) => { $(id).textContent = value; };
 const announce = (value) => setText('announcement', value);
+const initialMain = $('main').cloneNode(true);
+let expiryTimer;
+let resizeObserver;
+let authBusy = false;
+const auth = createAuthClient({ onExpired: () => showSignedOut('Your session has ended. Sign in again.') });
+const signedIn = () => auth.getSession().authenticated === true;
+const allowed = (permission) => signedIn() && auth.getSession().permissions?.[permission] === true;
+const sessionChannel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('supplysight.access') : null;
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -27,18 +37,7 @@ function svgElement(tag, attributes = {}, text) {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(`${String(window.API_BASE || '').replace(/\/$/, '')}${path}`, {
-    ...options,
-    headers: { Accept: 'application/json', ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers },
-  });
-  let data;
-  try { data = await response.json(); } catch { throw new Error(`The server returned an unreadable response (${response.status}). Check that the API is running.`); }
-  if (!response.ok) {
-    const error = new Error(data.error || `Request failed (${response.status}). Please try again.`);
-    error.status = response.status;
-    throw error;
-  }
-  return data;
+  return auth.request(path, options);
 }
 
 function currentSelection() {
@@ -67,12 +66,13 @@ function setLoading(loading, message = 'Updating the forecast and backtests…')
   const bounds = replayBounds();
   $('replay-prev').disabled = loading || !state.catalog || state.cutoff <= bounds.min;
   $('replay-next').disabled = loading || !state.catalog || state.cutoff >= bounds.max || state.forecast?.replay?.can_advance === false;
-  $('simulate-button').disabled = loading || !state.forecast;
-  $('assumptions-form').querySelectorAll('input').forEach((input) => { input.disabled = loading || !state.forecast; });
+  $('simulate-button').disabled = loading || !state.forecast || !allowed('can_simulate');
+  $('assumptions-form').querySelectorAll('input').forEach((input) => { input.disabled = loading || !state.forecast || !allowed('can_simulate'); });
   $('data-content').setAttribute('aria-busy', loading ? 'true' : 'false');
 }
 
 function showError(error) {
+  if (!signedIn() || error.name === 'AbortError') return;
   setText('global-error-text', error.message || String(error));
   $('global-error').hidden = false;
   announce(`Unable to load forecast: ${error.message || error}`);
@@ -97,6 +97,8 @@ function populateProducts() {
 }
 
 async function boot() {
+  if (!signedIn()) return;
+  const sessionGeneration = auth.getGeneration();
   $('global-error').hidden = true;
   $('awaiting-publication').hidden = true;
   state.releasesLoaded = false;
@@ -104,8 +106,10 @@ async function boot() {
   setLoading(true, 'Preparing your planning workspace…');
   try {
     const health = await api('/api/health');
+    if (sessionGeneration !== auth.getGeneration() || !signedIn()) return;
     updateRuntime(health.mode);
     const catalog = await api('/api/catalog');
+    if (sessionGeneration !== auth.getGeneration() || !signedIn()) return;
     if (!catalog.stores?.length || !catalog.products?.length) throw new Error('There are no sales series available. Import the M5 dataset or start the local synthetic demo.');
     state.catalog = catalog;
     state.cutoff = catalog.default_cutoff;
@@ -120,6 +124,7 @@ async function boot() {
     updateRuntime(catalog.mode);
     await loadForecast();
   } catch (error) {
+    if (sessionGeneration !== auth.getGeneration() || !signedIn()) return;
     state.forecast = null;
     state.catalog = null;
     setLoading(false);
@@ -142,9 +147,10 @@ function updateRuntime(mode) {
   const aws = mode === 'aws';
   setText('runtime-label', aws ? 'AWS deployment' : mode === 'local' ? 'Local development' : 'Connection pending');
   const button = $('release-demo-button');
-  button.disabled = aws || mode !== 'local';
+  button.disabled = aws || mode !== 'local' || !allowed('can_demo_release');
   button.textContent = aws ? 'Managed by SageMaker' : 'Run release demo ↗';
-  button.title = aws ? 'Model releases on AWS are managed by the authenticated SageMaker workflow.' : '';
+  button.title = aws ? 'Model releases on AWS are managed by the authenticated SageMaker workflow.' : !allowed('can_demo_release') ? 'Planner access is required to run the local release demonstration.' : '';
+  $('release-permission-note').hidden = aws || allowed('can_demo_release');
   setText('release-heading', aws ? 'Model release history' : 'Release gate demonstration');
   setText('release-description', aws ? 'Release decisions recorded by the forecasting workflow.' : 'A visible audit trail from a rejected candidate to a passing candidate.');
   setText('release-disclaimer', aws ? 'Only completed workflow decisions appear here. An approved model has passed its release checks; approval alone does not establish improved accuracy.' : 'This illustrative workflow uses the current dataset with a deliberately degraded candidate and a baseline clone. It does not promote a trained model or establish forecast improvement.');
@@ -161,6 +167,7 @@ function updateSource(data) {
 }
 
 async function loadForecast() {
+  if (!signedIn() || !state.catalog) return;
   const request = ++state.forecastRequest;
   ++state.simulationRequest;
   state.simulation = null;
@@ -320,12 +327,13 @@ function resetSimulation() {
   $('simulation-error').hidden = true;
   $('simulation-loading').hidden = false;
   setText('simulation-loading', 'Choose your assumptions and run a comparison.');
-  $('simulate-button').disabled = !state.forecast;
+  $('simulate-button').disabled = !state.forecast || !allowed('can_simulate');
+  if (!allowed('can_simulate')) setText('simulation-loading', 'Viewer access lets you review forecasts. Planner access is required to run policy comparisons.');
 }
 
 async function simulate(event) {
   event?.preventDefault();
-  if (!state.forecast || $('data-content').hidden || !$('assumptions-form').reportValidity()) return;
+  if (!allowed('can_simulate') || !state.forecast || $('data-content').hidden || !$('assumptions-form').reportValidity()) return;
   const request = ++state.simulationRequest;
   const assumptions = Object.fromEntries([...new FormData($('assumptions-form'))].map(([key, value]) => [key, Number(value)]));
   $('simulation-error').hidden = true;
@@ -349,7 +357,7 @@ async function simulate(event) {
     $('simulation-error').hidden = false;
     $('simulation-loading').hidden = true;
   } finally {
-    if (request === state.simulationRequest) $('simulate-button').disabled = false;
+    if (request === state.simulationRequest) $('simulate-button').disabled = !allowed('can_simulate');
   }
 }
 
@@ -427,6 +435,7 @@ function renderModelLab(data) {
 }
 
 async function loadReleases() {
+  if (!signedIn()) return;
   const request = ++state.releaseRequest;
   $('release-error').hidden = true;
   try {
@@ -462,7 +471,7 @@ function renderReleases(releases) {
 }
 
 async function runReleaseDemo() {
-  if (state.mode !== 'local' || $('release-demo-button').disabled) return;
+  if (!allowed('can_demo_release') || state.mode !== 'local' || $('release-demo-button').disabled) return;
   const request = ++state.releaseRequest;
   const button = $('release-demo-button');
   button.disabled = true;
@@ -479,8 +488,10 @@ async function runReleaseDemo() {
     setText('release-error', error.message);
     $('release-error').hidden = false;
   } finally {
-    button.disabled = false;
-    button.textContent = 'Run release demo ↗';
+    if (request === state.releaseRequest) {
+      button.disabled = !allowed('can_demo_release');
+      button.textContent = 'Run release demo ↗';
+    }
   }
 }
 
@@ -515,14 +526,16 @@ function setOperationsStatus(id, value) {
 function setDrillAvailability() {
   const data = state.operations;
   const local = data?.mode === 'local' && data?.capabilities?.can_run_drill === true;
-  $('operations-drill-button').disabled = !local || state.drillRunning || state.operationsLoading;
+  $('operations-drill-button').disabled = !local || !allowed('can_run_drill') || state.drillRunning || state.operationsLoading;
   $('operations-drill-button').textContent = state.drillRunning ? 'Running recovery drill…' : local ? 'Run recovery drill →' : data?.mode === 'aws' ? 'Local exercise only' : 'Recovery unavailable';
+  $('operations-drill-button').title = local && !allowed('can_run_drill') ? 'Planner access is required to run recovery drills.' : '';
+  if ($('drill-permission-note')) $('drill-permission-note').hidden = !local || allowed('can_run_drill');
   $('operations-refresh').disabled = state.drillRunning || state.operationsLoading;
   $('operations-retry').disabled = state.drillRunning || state.operationsLoading;
 }
 
 async function loadOperations() {
-  if (state.drillRunning) return;
+  if (!signedIn() || state.drillRunning) return;
   const request = ++state.operationsRequest;
   state.operationsLoading = true;
   state.operations = null;
@@ -681,7 +694,7 @@ function renderDrill(drill) {
 }
 
 async function runRecoveryDrill() {
-  if (state.operations?.mode !== 'local' || state.operations?.capabilities?.can_run_drill !== true || $('operations-drill-button').disabled) return;
+  if (!allowed('can_run_drill') || state.operations?.mode !== 'local' || state.operations?.capabilities?.can_run_drill !== true || $('operations-drill-button').disabled) return;
   const request = ++state.operationsRequest;
   state.drillRunning = true;
   $('operations-drill-error').hidden = true;
@@ -719,6 +732,7 @@ async function runRecoveryDrill() {
 }
 
 function switchView(view, updateHash = true) {
+  if (!signedIn()) return;
   const views = {
     forecast: ['Demand forecast', 'See what’s ahead. Keep the right products on your shelves.'],
     replenishment: ['Replenishment planner', 'Turn demand into decisions. Find the policy that fits your store.'],
@@ -742,13 +756,13 @@ function switchView(view, updateHash = true) {
   if (updateHash) history.replaceState(null, '', `#${view}`);
   if (view === 'forecast') renderChart();
   if (view === 'replenishment' && state.forecast && !state.simulation && !$('simulate-button').disabled) simulate();
-  const canLoadReleases = state.mode === 'aws' || (state.catalog && !$('release-demo-button').disabled);
+  const canLoadReleases = state.mode === 'aws' || (state.catalog && state.mode === 'local');
   $('release-panel').hidden = view !== 'models' || !canLoadReleases;
   if (view === 'models' && !state.releasesLoaded && canLoadReleases) loadReleases();
   if (enteredOperations) loadOperations();
 }
 
-document.querySelectorAll('.nav-button').forEach((button) => button.addEventListener('click', () => switchView(button.dataset.view)));
+function bindWorkspaceEvents() {
 $('open-replenishment').addEventListener('click', () => { switchView('replenishment'); $('page-title').scrollIntoView({ block: 'start', behavior: 'smooth' }); });
 $('open-models').addEventListener('click', () => { switchView('models'); $('page-title').scrollIntoView({ block: 'start', behavior: 'smooth' }); });
 $('store-select').addEventListener('change', () => { try { populateProducts(); loadForecast(); } catch (error) { showError(error); } });
@@ -782,8 +796,166 @@ $('release-demo-button').addEventListener('click', runReleaseDemo);
 $('operations-refresh').addEventListener('click', loadOperations);
 $('operations-retry').addEventListener('click', loadOperations);
 $('operations-drill-button').addEventListener('click', runRecoveryDrill);
+  let resizeFrame;
+  resizeObserver = new ResizeObserver(() => { cancelAnimationFrame(resizeFrame); resizeFrame = requestAnimationFrame(renderChart); });
+  resizeObserver.observe($('forecast-chart-container'));
+}
+
+function resetWorkspace() {
+  clearTimeout(expiryTimer);
+  $('workspace').hidden = true;
+  ++state.forecastRequest;
+  ++state.simulationRequest;
+  ++state.releaseRequest;
+  ++state.operationsRequest;
+  Object.assign(state, { catalog: null, forecast: null, mode: null, cutoff: null, simulation: null, releasesLoaded: false, chartIndex: null, operations: null, operationsLoading: false, drillRunning: false, view: 'forecast' });
+  resizeObserver?.disconnect();
+  $('main').replaceWith(initialMain.cloneNode(true));
+  bindWorkspaceEvents();
+  $('source-badge').replaceChildren(element('span'), document.createTextNode('Access pending'));
+  $('source-badge').classList.remove('real-data');
+  $('source-badge').removeAttribute('title');
+  setText('profile-name', 'Signed out');
+  setText('profile-role', 'Access pending');
+  setText('profile-avatar', '—');
+  setText('top-avatar', '—');
+  $('top-avatar').setAttribute('aria-label', 'Signed out');
+  setText('access-role', 'Access pending');
+  setText('runtime-label', 'Connecting…');
+  setText('breadcrumb-current', 'Demand forecast');
+  announce('');
+  document.title = 'SupplySight · Sign in';
+}
+
+function updateSigninScreen(message = '') {
+  const config = auth.getConfig();
+  const local = config?.mode === 'local_demo';
+  $('signin-screen').hidden = false;
+  $('local-signin').hidden = !local;
+  $('signin-cloud').hidden = !config || local;
+  $('signin-retry').hidden = !!config;
+  $('signin-clear').hidden = !config || local || !message.includes('not assigned');
+  $('signin-error').hidden = !message;
+  setText('signin-error', message);
+  setText('signin-mode', local ? 'LOCAL ACCESS PREVIEW' : config ? 'ACCOUNT SIGN-IN' : 'CONNECTION PENDING');
+  setText('signin-description', local ? 'Choose a role to explore how access works. No account or password is required for this local preview.' : config ? 'Sign in with your account to open the planning workspace. Access is assigned by your workspace administrator.' : 'Connect to your workspace to check how to sign in.');
+  $('signin-progress').hidden = !authBusy;
+  ['signin-viewer', 'signin-planner', 'signin-cloud', 'signin-retry', 'signin-clear'].forEach((id) => { $(id).disabled = authBusy; });
+}
+
+function showSignedOut(message = '') {
+  auth.clear();
+  resetWorkspace();
+  updateSigninScreen(message);
+}
+
+function scheduleExpiry() {
+  clearTimeout(expiryTimer);
+  const expires = auth.getExpiresAt();
+  if (expires > 0) expiryTimer = setTimeout(() => showSignedOut('Your session has ended. Sign in again.'), Math.max(1, expires - Date.now()));
+}
+
+function showWorkspace() {
+  const session = auth.getSession();
+  if (!session.authenticated) { showSignedOut(); return; }
+  resetWorkspace();
+  const role = session.role === 'planner' ? 'Planner' : 'Viewer';
+  const local = auth.getConfig()?.mode === 'local_demo';
+  const name = session.display_name;
+  const initials = name.split(/\s+/).filter(Boolean).map((part) => part[0]).slice(0, 2).join('').toUpperCase() || role[0];
+  setText('profile-name', name);
+  setText('profile-role', `${role}${local ? ' · Local preview' : ''}`);
+  setText('profile-avatar', initials);
+  setText('top-avatar', initials);
+  $('top-avatar').setAttribute('aria-label', `${name}, ${role}`);
+  setText('access-role', `${role}${local ? ' · Preview' : ''}`);
+  $('simulation-permission-note').hidden = allowed('can_simulate');
+  const note = element('p', 'permission-note', 'Planner access is required to run recovery drills.');
+  note.id = 'drill-permission-note';
+  note.hidden = allowed('can_run_drill');
+  $('operations-drill-button').insertAdjacentElement('afterend', note);
+  $('signin-screen').hidden = true;
+  $('workspace').hidden = false;
+  scheduleExpiry();
+  switchView(location.hash.slice(1) || 'forecast', false);
+  boot();
+}
+
+async function initializeAccess() {
+  if (authBusy) return;
+  authBusy = true;
+  resetWorkspace();
+  updateSigninScreen();
+  try {
+    const session = await auth.initialize();
+    if (session.authenticated) showWorkspace();
+    else updateSigninScreen();
+  } catch (error) {
+    if (error.name !== 'AbortError') updateSigninScreen(error.status === 403 ? 'Access is not assigned. Ask your workspace administrator to add you as a Viewer or Planner.' : error.message);
+  } finally { authBusy = false; updateSigninControls(); }
+}
+
+function updateSigninControls() {
+  $('signin-progress').hidden = !authBusy;
+  ['signin-viewer', 'signin-planner', 'signin-cloud', 'signin-retry', 'signin-clear'].forEach((id) => { $(id).disabled = authBusy; });
+}
+
+async function signIn(role) {
+  if (authBusy) return;
+  authBusy = true;
+  resetWorkspace();
+  updateSigninScreen();
+  try {
+    const session = await auth.signIn(role);
+    if (session.authenticated) {
+      showWorkspace();
+      sessionChannel?.postMessage({ type: 'local-role-change' });
+    }
+  } catch (error) { if (error.name !== 'AbortError') updateSigninScreen(error.message); }
+  finally { authBusy = false; updateSigninControls(); }
+}
+
+async function signOut() {
+  if (authBusy) return;
+  authBusy = true;
+  resetWorkspace();
+  updateSigninScreen();
+  let message = '';
+  try { await auth.signOut(); }
+  catch { message = 'The server could not confirm sign-out. Your displayed data has been cleared. Reconnect and try signing out again.'; }
+  finally {
+    authBusy = false;
+    sessionChannel?.postMessage({ type: 'signout' });
+    showSignedOut(message);
+  }
+}
+
+document.querySelectorAll('.nav-button').forEach((button) => button.addEventListener('click', () => switchView(button.dataset.view)));
+$('signin-viewer').addEventListener('click', () => signIn('viewer'));
+$('signin-planner').addEventListener('click', () => signIn('planner'));
+$('signin-cloud').addEventListener('click', () => signIn());
+$('signin-retry').addEventListener('click', initializeAccess);
+$('signin-clear').addEventListener('click', signOut);
+$('signout-button').addEventListener('click', signOut);
 window.addEventListener('hashchange', () => switchView(location.hash.slice(1), false));
-let resizeFrame;
-new ResizeObserver(() => { cancelAnimationFrame(resizeFrame); resizeFrame = requestAnimationFrame(renderChart); }).observe($('forecast-chart-container'));
-switchView(location.hash.slice(1) || 'forecast', false);
-boot();
+window.addEventListener('pagehide', () => { auth.clear(); resetWorkspace(); });
+window.addEventListener('pageshow', (event) => { if (event.persisted) { showSignedOut('Sign in again to reopen your workspace.'); } });
+window.addEventListener('focus', async () => {
+  if (!signedIn() || authBusy) return;
+  const previous = JSON.stringify([auth.getSession().role, auth.getSession().permissions]);
+  try {
+    const session = await auth.checkSession();
+    if (!session.authenticated) return;
+    if (previous !== JSON.stringify([session.role, session.permissions])) showWorkspace();
+    else scheduleExpiry();
+  } catch (error) {
+    if (error.status === 403) { showSignedOut('Access is not assigned. Ask your workspace administrator to add you as a Viewer or Planner.'); }
+    else if (error.status !== 401 && error.name !== 'AbortError' && signedIn()) announce('Access could not be refreshed. Your current session will still end at its scheduled expiry.');
+  }
+});
+if (sessionChannel) sessionChannel.onmessage = (event) => {
+  if (!['signout', 'local-role-change'].includes(event.data?.type)) return;
+  showSignedOut(event.data.type === 'signout' ? 'You signed out in another tab.' : 'Access changed in another tab. Confirming the current role…');
+  if (event.data.type === 'local-role-change' && auth.getConfig()?.mode === 'local_demo') initializeAccess();
+};
+initializeAccess();

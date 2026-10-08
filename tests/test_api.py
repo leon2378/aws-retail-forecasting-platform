@@ -4,8 +4,11 @@ import tempfile
 import unittest
 
 from retail_forecast.api import DEFAULT_ASSUMPTIONS, handle_request
+from retail_forecast.auth import Principal
 from retail_forecast.data import demo_dataset
 from retail_forecast.storage import DynamoRepository, LocalRepository
+
+PLANNER = Principal("test-planner", "planner", "Planner fixture", "local_demo")
 
 
 class FakeRepository:
@@ -29,32 +32,32 @@ class APITest(unittest.TestCase):
         self.selection = {"store": "CA_1", "item": "FOODS_1_001", "cutoff": "300", "model": "seasonal"}
 
     def test_forecast_never_returns_future_observations(self):
-        status, result = handle_request("GET", "/api/forecast", self.selection, None, self.repo)
+        status, result = handle_request("GET", "/api/forecast", self.selection, None, self.repo, principal=PLANNER)
         self.assertEqual(status, 200)
         self.assertFalse(any(k.startswith("_") for k in result))
 
     def test_cutoff_rejects_fractions_infinity_and_booleans(self):
         for cutoff in ["2.5", "NaN", "inf", True, -1, 329]:
             with self.subTest(cutoff=cutoff):
-                status, _ = handle_request("GET", "/api/forecast", {**self.selection, "cutoff": cutoff}, None, self.repo)
+                status, _ = handle_request("GET", "/api/forecast", {**self.selection, "cutoff": cutoff}, None, self.repo, principal=PLANNER)
                 self.assertEqual(status, 400)
 
     def test_missing_product_and_unavailable_model(self):
-        status, _ = handle_request("GET", "/api/forecast", {**self.selection, "item": "missing"}, None, self.repo)
+        status, _ = handle_request("GET", "/api/forecast", {**self.selection, "item": "missing"}, None, self.repo, principal=PLANNER)
         self.assertEqual(status, 404)
-        status, _ = handle_request("GET", "/api/forecast", {**self.selection, "model": "xgboost"}, None, self.repo)
+        status, _ = handle_request("GET", "/api/forecast", {**self.selection, "model": "xgboost"}, None, self.repo, principal=PLANNER)
         self.assertEqual(status, 400)
 
     def test_inventory_invalid_assumptions(self):
         for assumptions in [{"lead_time": -1}, {"holding_cost": float("nan")}, {"initial_stock": True},
                             {"review_period": 0}, {"review_period": 1.5}, {"initial_stock": 10 ** 1000}, {"typo": 4}, []]:
             status, result = handle_request("POST", "/api/simulate", {},
-                                            {**self.selection, "assumptions": assumptions}, self.repo)
+                                            {**self.selection, "assumptions": assumptions}, self.repo, principal=PLANNER)
             self.assertEqual(status, 400, result)
 
     def test_inventory_response_is_json_safe(self):
         status, result = handle_request("POST", "/api/simulate", {},
-                                        {**self.selection, "assumptions": DEFAULT_ASSUMPTIONS}, self.repo)
+                                        {**self.selection, "assumptions": DEFAULT_ASSUMPTIONS}, self.repo, principal=PLANNER)
         self.assertEqual(status, 200, result)
         self.assertEqual(len(result["policies"]), 3)
         json.dumps(result, allow_nan=False)
@@ -62,12 +65,12 @@ class APITest(unittest.TestCase):
     def test_short_holdout_rejected(self):
         original = self.repo.forecast
         self.repo.forecast = lambda *args: {**original(*args), "_actuals": [1] * 27}
-        status, _ = handle_request("POST", "/api/simulate", {}, self.selection, self.repo)
+        status, _ = handle_request("POST", "/api/simulate", {}, self.selection, self.repo, principal=PLANNER)
         self.assertEqual(status, 400)
 
     def test_cloud_release_demo_is_forbidden(self):
         repo = DynamoRepository(table=object())
-        status, _ = handle_request("POST", "/api/releases/demo", {}, {}, repo)
+        status, _ = handle_request("POST", "/api/releases/demo", {}, {}, repo, principal=PLANNER)
         self.assertEqual(status, 403)
 
 
