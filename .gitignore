@@ -10,7 +10,8 @@ build/
 *.tfstate
 *.tfstate.*
 *.tfplan
-terraform.tfvars
+*.tfvars
+*.tfvars.json
 .env
 clearml.conf
 kaggle.json

@@ -16,9 +16,9 @@ def package(root, output):
         for folder in ["retail_forecast", "aws", "frontend", "tests", "infra"]:
             for path in sorted((root / folder).rglob("*")):
                 if (path.is_file() and not any(part.startswith(".") or part == "__pycache__" for part in path.relative_to(root).parts)
-                        and ".tfstate" not in path.name and not path.name.endswith((".tfplan", ".tfvars"))):
+                        and ".tfstate" not in path.name and not path.name.endswith((".tfplan", ".tfvars", ".tfvars.json"))):
                     archive.write(path, path.relative_to(root))
-        for filename in ["Dockerfile", "buildspec.yml", "pyproject.toml"]:
+        for filename in ["Dockerfile", ".dockerignore", "buildspec.yml", "pyproject.toml"]:
             if (root / filename).exists():
                 archive.write(root / filename, filename)
     return output / "lambda.zip", output / "source.zip"

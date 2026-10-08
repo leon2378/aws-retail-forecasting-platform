@@ -35,15 +35,14 @@ resource "aws_lambda_function" "api" {
 }
 resource "aws_lambda_function" "ingest" {
 
-  function_name                  = "${local.prefix}-ingest"
-  role                           = aws_iam_role.ingest.arn
-  runtime                        = "python3.11"
-  handler                        = "aws.handlers.ingest.handler"
-  filename                       = var.lambda_zip
-  source_code_hash               = filebase64sha256(var.lambda_zip)
-  timeout                        = 120
-  memory_size                    = 512
-  reserved_concurrent_executions = 1
+  function_name    = "${local.prefix}-ingest"
+  role             = aws_iam_role.ingest.arn
+  runtime          = "python3.11"
+  handler          = "aws.handlers.ingest.handler"
+  filename         = var.lambda_zip
+  source_code_hash = filebase64sha256(var.lambda_zip)
+  timeout          = 120
+  memory_size      = 512
   environment {
     variables = { RESULTS_TABLE = aws_dynamodb_table.results.name, DATA_BUCKET = aws_s3_bucket.app["data"].id,
     PIPELINE_NAME = local.prefix, INITIAL_CUTOFF = tostring(var.initial_cutoff), CANDIDATE_MODEL = var.candidate_model }

@@ -473,7 +473,8 @@ function switchView(view, updateHash = true) {
   if (updateHash) history.replaceState(null, '', `#${view}`);
   if (view === 'forecast') renderChart();
   if (view === 'replenishment' && state.forecast && !state.simulation && !$('simulate-button').disabled) simulate();
-  if (view === 'models' && state.catalog && !state.releasesLoaded && !$('release-demo-button').disabled) loadReleases();
+  const canLoadReleases = state.catalog?.mode === 'aws' || !$('release-demo-button').disabled;
+  if (view === 'models' && state.catalog && !state.releasesLoaded && canLoadReleases) loadReleases();
 }
 
 document.querySelectorAll('.nav-button').forEach((button) => button.addEventListener('click', () => switchView(button.dataset.view)));
