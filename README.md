@@ -86,7 +86,7 @@ All savings are **simulation results**, not realized business savings. The best 
 ## CLI and tests
 
 ```powershell
-./.venv/Scripts/python.exe -m retail_forecast forecast --store CA_1 --item FOODS_1_001 --model xgboost
+./.venv/Scripts/python.exe -m retail_forecast forecast --store CA_1 --item HOBBIES_1_001 --model xgboost
 ./.venv/Scripts/python.exe -m retail_forecast release-demo
 ./.venv/Scripts/python.exe -m unittest discover -s tests -v
 ```
