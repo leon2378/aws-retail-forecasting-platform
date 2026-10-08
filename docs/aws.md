@@ -1,6 +1,42 @@
 # AWS deployment and operations
 
-This runbook targets **ap-southeast-2 (Sydney)**. The application works locally without AWS. Terraform and the offline job tests have been validated; a live SageMaker execution, deployed frontend and production IAM permissions still need verification. The local Docker daemon was unavailable during validation, so the Linux image build has not been verified. The commands below create billable resources only when the deployment steps are explicitly executed. Review the saved plan and expected costs before applying it.
+This runbook targets **ap-southeast-2 (Sydney)**. The application works locally without AWS. On 8 October 2026, the 43-resource foundation was deployed and passed 21 live smoke checks, then all 43 resources were removed to stop ongoing project charges. The project is currently running locally. The commands below create billable resources only when the deployment steps are explicitly executed. Review a fresh saved plan and expected costs before redeploying.
+
+The completed smoke checks verified resource configuration, HTTPS frontend delivery, Lambda health and release routes, same-origin API routing, the expected empty-catalog response and rejection of the public release-demo action. They did not exercise SageMaker training, processing, Batch Transform or forecast publication. No ML pipeline or model version was published during that foundation test. The Linux image build, offline ML rehearsal and inference HTTP protocol have since passed local validation. Live SageMaker execution, model registration and DynamoDB publication remain unverified; optional delivery, ClearML and scheduled ingestion remain disabled.
+
+## Rehearse the ML workflow locally
+
+Install the ML/AWS extras and import M5 as described in the [main README](../README.md). Then run the job rehearsal without AWS credentials:
+
+```powershell
+./.venv/Scripts/python.exe -m aws.local_validate --dataset data/dataset.json --cutoff 1913 --output build/local-rehearsal
+```
+
+The command runs the actual Prepare, Train and Evaluate functions for both candidates, checks the separation of historical training data and held-out labels, reloads each compressed model artifact and performs inference with training calls prohibited. It validates forecast dates, interval ordering, chronological backtests and inventory comparisons under three stock/lead-time scenarios. `build/local-rehearsal/report.json` records source provenance, dependency versions, measured gate outcomes and output paths. Generated artifacts contain private data and remain under the ignored `build/` directory.
+
+Use a new or empty output directory; the command never removes existing artifacts. The default cutoff leaves the final 28 days for scoring. A rejected candidate is still inferred locally for comparison, whereas the AWS pipeline would stop before its Batch Transform and publication. This rehearsal does not execute the container in SageMaker, register model versions or publish results to DynamoDB. Validate one complete AWS replay separately before enabling a schedule.
+
+Optionally reproduce the rehearsal inside the Linux image. Build it locally, mount the imported dataset read-only and write to a fresh ignored output folder. The rehearsal container has no network access and is limited to two CPUs:
+
+```powershell
+docker build --platform linux/amd64 -t shelfcast:local .
+$linuxDatasetPath = (Resolve-Path data/dataset.json).Path
+$linuxOutputPath = Join-Path (Get-Location).Path ('build/linux-rehearsal-' + (Get-Date -Format 'yyyyMMddHHmmssfff'))
+New-Item -ItemType Directory -Path $linuxOutputPath | Out-Null
+docker run --rm --network none --cpus 2 `
+    --mount "type=bind,source=$linuxDatasetPath,target=/input/dataset.json,readonly" `
+    --mount "type=bind,source=$linuxOutputPath,target=/output" `
+    --entrypoint python shelfcast:local -m aws.local_validate `
+    --dataset /input/dataset.json --cutoff 1913 --output /output/rehearsal
+```
+
+The report is saved under `$linuxOutputPath/rehearsal/report.json`. Image building can download the base image and dependencies; the rehearsal itself runs offline and uses no AWS resources.
+
+Both completed private M5 rehearsals covered 36 series, 72 unique 28-day forecasts and 972 policy simulations each. The native Windows environment used NumPy 2.5.3 and XGBoost 3.4.1, yielding 109.02% XGBoost WAPE and 76.69% coverage. The Python 3.11 Linux image used NumPy 2.4.6 and XGBoost 3.2.0, yielding 110.21% WAPE and 76.36% coverage. Both gates rejected XGBoost against the same 108.07% seasonal WAPE and passed the seasonal candidate at parity with 82.34% coverage. Keep results attached to their recorded dependency versions; these runs do not establish an overall accuracy improvement or a successful AWS release.
+
+The Linux image's `/ping` health route and `/invocations` JSON-lines inference route passed protocol checks for all 72 forecasts from each native and Linux artifact set. The served forecasts matched each artifact's expected output exactly and omitted held-out actuals. Invalid identities, malformed JSON, empty bodies and oversized requests returned HTTP 400. This validates the custom inference container locally, including loading native-trained artifacts; AWS Batch Transform itself remains untested.
+
+The image's Prepare, Train and Evaluate CLI stages also passed a 36-series seasonal smoke test using SageMaker-style `/opt/ml` paths. This verifies those local entry points and does not exercise SageMaker orchestration or publication.
 
 ## Prerequisites
 
@@ -37,10 +73,12 @@ Terraform uses local state initially. Keep state and plans private; both can con
 
 ## 1. Create the foundation
 
-Run from the repository root. Copy the example configuration and keep schedules, delivery and ClearML disabled for the first smoke test:
+Run from the repository root. If a private configuration does not already exist, copy the example. Keep `schedule_enabled`, `enable_delivery` and `enable_clearml` disabled and `pipeline_definition_file` empty for the first foundation smoke test:
 
 ```powershell
-Copy-Item infra/terraform.tfvars.example infra/terraform.tfvars
+if (-not (Test-Path infra/terraform.tfvars)) {
+    Copy-Item infra/terraform.tfvars.example infra/terraform.tfvars
+}
 ```
 
 For the imported M5 evaluation data, set `initial_cutoff = 1913` in the private `infra/terraform.tfvars`: its 1,941 historical days then leave the final complete 28-day holdout for validation. Choose an earlier cutoff to replay several historical days. The example's default cutoff of 196 remains valid for the synthetic demo.
@@ -57,7 +95,9 @@ terraform -chdir=infra apply ../build/foundation.tfplan
 terraform -chdir=infra output
 ```
 
-This creates private, versioned S3 buckets, a DynamoDB table, an immutable ECR repository, roles, Lambda functions, an HTTP API, CloudFront delivery, logs, alarms, a model-package group and a **disabled** EventBridge rule. It does not create a persistent inference endpoint. The ML pipeline is added after its image exists. API forecast/catalog requests remain unavailable until a complete batch has been published.
+This creates private, versioned S3 buckets, a DynamoDB table, an immutable ECR repository, roles, Lambda functions, an HTTP API, CloudFront delivery, logs, alarms, a model-package group and a **disabled** EventBridge rule. It does not create a persistent inference endpoint. The ML pipeline is added after its image exists. `/api/health` identifies AWS mode and `/api/releases` can return an empty history before a first batch. Forecast/catalog requests return HTTP 404 until a complete batch has been published. The frontend handles the empty catalog as **Awaiting the first forecast**, keeps planning controls disabled and offers a publication check; other failures remain visible as errors.
+
+After a teardown, generate a new plan and use the new outputs. Do not reuse an old saved plan, former hosted URL or generated pipeline containing removed resource identifiers.
 
 Export the non-secret resource identifiers for the following commands:
 
@@ -98,6 +138,8 @@ aws cloudfront create-invalidation --distribution-id $distributionId --paths '/*
 ```
 
 The frontend uses same-origin `/api/*` requests. CloudFront routes those paths to API Gateway with caching disabled and forwards query strings and request bodies. Static files are served from private S3 through origin access control. A separate `API_BASE` is unnecessary for this deployment. The API is a public, throttled demo; add authentication before serving non-public information.
+
+The frontend requests `/api/health` before the catalog so an empty AWS workspace is identified correctly. In AWS mode the model lab displays published release history, with an empty state when no decisions exist. Its release-demo action is disabled; the API also rejects that local-only action.
 
 Terraform creates the first pipeline definition. Subsequent application releases update that definition through `aws sagemaker update-pipeline` or the deployment buildspec. The resource ignores definition drift to prevent a later infrastructure plan from restoring an old image. Terraform continues to manage its role, name and parallelism. For a later manual release, regenerate the definition against the new immutable image and run:
 
@@ -192,6 +234,10 @@ Inspect the Lambda and `/aws/sagemaker/*` CloudWatch logs, execution step failur
 For a replay stuck before an execution ARN is stored, first retry ingestion: its saved token is designed to recover a lost response. If snapshot loading or a validation error persists, fix the source or pipeline before retrying. Do not clear a lock while its SageMaker execution is active. A rejected release is an expected business gate outcome and its overall pipeline can still report Succeeded; inspect the registered model's approval state and release entry.
 
 Billable components include each training/processing/transform job, S3 storage and object versions, DynamoDB requests/storage, CloudFront transfer, Lambda/API requests, logs, CodeBuild/CodePipeline when enabled, and optional EC2/EBS/networking. Processing jobs run for preparation, evaluation and publication/rejection; training has a two-hour limit and each processing job a one-hour limit. There is no always-on inference endpoint, but keeping daily schedules or ClearML enabled still incurs ongoing cost. Check [SageMaker pricing](https://aws.amazon.com/sagemaker-ai/pricing/) and the [AWS Pricing Calculator](https://calculator.aws/) for Sydney before deployment.
+
+Job runtime caps are not spending limits. This configuration has no overall Batch Transform runtime cap and does not enforce a total cost ceiling. Monitor active jobs and stop unexpectedly long runs. Retained current S3 `runs/` objects, tagged ECR images and SageMaker job logs require deliberate cleanup or retention settings: the S3 rule expires only noncurrent run-object versions, the ECR rule expires only untagged images, and Terraform's 30-day log retention covers its Lambda/API log groups rather than SageMaker-created groups.
+
+Disabling scheduled ingestion stops future scheduled runs, but retained storage, DynamoDB backups, logs and alarms can still incur charges. To stop the project's ongoing resource usage, archive wanted data locally, stop any active jobs, remove the deployed resources and verify that none remain. Billing can post already-incurred usage later; teardown cannot reverse earlier charges. Keep local development independent of the removed AWS environment until a new deployment is intended.
 
 Disable schedules and wait for active executions before teardown. Preserve wanted model reports and source archives. S3 buckets use `force_destroy = false`, so Terraform will refuse to delete nonempty buckets; review object versions and retention before any explicit cleanup. Tagged ECR images and registered package/artifact records also need deliberate retention management. Use a reviewed destroy plan once those decisions are made. The application foundation has no production backup/restore drill or live load-test evidence yet.
 

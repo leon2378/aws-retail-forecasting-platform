@@ -1,7 +1,7 @@
 const $ = (id) => document.getElementById(id);
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const COLORS = { actual: '#91a49d', forecast: '#286b5d', baseline: '#d59460', band: '#dcebdc', grid: '#e9eee5', text: '#92a08c' };
-const state = { catalog: null, forecast: null, view: 'forecast', cutoff: null, forecastRequest: 0, simulationRequest: 0, simulation: null, releasesLoaded: false, releaseRequest: 0, chartIndex: null };
+const state = { catalog: null, forecast: null, mode: null, view: 'forecast', cutoff: null, forecastRequest: 0, simulationRequest: 0, simulation: null, releasesLoaded: false, releaseRequest: 0, chartIndex: null };
 const number = (value, digits = 0) => value === null || value === undefined || !Number.isFinite(Number(value)) ? '—' : new Intl.NumberFormat('en-US', { maximumFractionDigits: digits, minimumFractionDigits: digits }).format(Number(value));
 const percent = (value, digits = 1) => value === null || value === undefined || !Number.isFinite(Number(value)) ? '—' : `${number(Number(value) * 100, digits)}%`;
 const money = (value) => value === null || value === undefined || !Number.isFinite(Number(value)) ? '—' : `$${number(value, 2)}`;
@@ -33,7 +33,11 @@ async function api(path, options = {}) {
   });
   let data;
   try { data = await response.json(); } catch { throw new Error(`The server returned an unreadable response (${response.status}). Check that the API is running.`); }
-  if (!response.ok) throw new Error(data.error || `Request failed (${response.status}). Please try again.`);
+  if (!response.ok) {
+    const error = new Error(data.error || `Request failed (${response.status}). Please try again.`);
+    error.status = response.status;
+    throw error;
+  }
   return data;
 }
 
@@ -63,6 +67,8 @@ function setLoading(loading, message = 'Updating the forecast and backtests…')
   const bounds = replayBounds();
   $('replay-prev').disabled = loading || !state.catalog || state.cutoff <= bounds.min;
   $('replay-next').disabled = loading || !state.catalog || state.cutoff >= bounds.max || state.forecast?.replay?.can_advance === false;
+  $('simulate-button').disabled = loading || !state.forecast;
+  $('assumptions-form').querySelectorAll('input').forEach((input) => { input.disabled = loading || !state.forecast; });
   $('main').setAttribute('aria-busy', loading ? 'true' : 'false');
 }
 
@@ -92,8 +98,13 @@ function populateProducts() {
 
 async function boot() {
   $('global-error').hidden = true;
+  $('awaiting-publication').hidden = true;
+  state.releasesLoaded = false;
+  ++state.releaseRequest;
   setLoading(true, 'Preparing your planning workspace…');
   try {
+    const health = await api('/api/health');
+    updateRuntime(health.mode);
     const catalog = await api('/api/catalog');
     if (!catalog.stores?.length || !catalog.products?.length) throw new Error('There are no sales series available. Import the M5 dataset or start the local synthetic demo.');
     state.catalog = catalog;
@@ -106,19 +117,37 @@ async function boot() {
     $('replay-date').min = cutoffDate(catalog.min_cutoff || 196);
     $('replay-date').max = cutoffDate(catalog.mode === 'aws' ? catalog.default_cutoff : catalog.total_days - 28);
     updateSource(catalog);
-    setText('runtime-label', catalog.mode === 'aws' ? 'AWS deployment' : 'Local development');
-    if (catalog.mode === 'aws') {
-      $('release-demo-button').disabled = true;
-      $('release-demo-button').textContent = 'Managed by SageMaker';
-      $('release-demo-button').title = 'Model releases on AWS are managed by the authenticated SageMaker workflow.';
-    }
+    updateRuntime(catalog.mode);
     await loadForecast();
   } catch (error) {
     state.forecast = null;
     state.catalog = null;
     setLoading(false);
-    showError(error);
+    if (state.mode === 'aws' && error.status === 404 && error.message === 'No published result exists yet for this selection') {
+      $('awaiting-publication').hidden = false;
+      ['store-select', 'product-select', 'model-select'].forEach((id) => populateSelect(id, [{ value: '', label: 'Awaiting first forecast' }]));
+      const badge = $('source-badge');
+      badge.replaceChildren(element('span'), document.createTextNode('Awaiting published data'));
+      badge.classList.remove('real-data');
+      badge.title = 'No forecast batch has been published to this AWS workspace yet.';
+      setText('footer-source', 'AWS workspace · Awaiting first forecast');
+      announce('AWS workspace connected. Awaiting the first published forecast.');
+    } else showError(error);
+    switchView(state.view, false);
   }
+}
+
+function updateRuntime(mode) {
+  state.mode = mode;
+  const aws = mode === 'aws';
+  setText('runtime-label', aws ? 'AWS deployment' : 'Local development');
+  const button = $('release-demo-button');
+  button.disabled = aws || mode !== 'local';
+  button.textContent = aws ? 'Managed by SageMaker' : 'Run release demo ↗';
+  button.title = aws ? 'Model releases on AWS are managed by the authenticated SageMaker workflow.' : '';
+  setText('release-heading', aws ? 'Model release history' : 'Release gate demonstration');
+  setText('release-description', aws ? 'Release decisions recorded by the forecasting workflow.' : 'A visible audit trail from a rejected candidate to a passing candidate.');
+  setText('release-disclaimer', aws ? 'Only completed workflow decisions appear here. An approved model has passed its release checks; approval alone does not establish improved accuracy.' : 'This illustrative workflow uses the current dataset with a deliberately degraded candidate and a baseline clone. It does not promote a trained model or establish forecast improvement.');
 }
 
 function updateSource(data) {
@@ -290,7 +319,7 @@ function resetSimulation() {
   $('simulation-error').hidden = true;
   $('simulation-loading').hidden = false;
   setText('simulation-loading', 'Choose your assumptions and run a comparison.');
-  $('simulate-button').disabled = false;
+  $('simulate-button').disabled = !state.forecast;
 }
 
 async function simulate(event) {
@@ -398,6 +427,7 @@ function renderModelLab(data) {
 
 async function loadReleases() {
   const request = ++state.releaseRequest;
+  $('release-error').hidden = true;
   try {
     const data = await api('/api/releases');
     if (request !== state.releaseRequest) return;
@@ -413,7 +443,7 @@ async function loadReleases() {
 function renderReleases(releases) {
   const list = $('release-list');
   if (!releases.length) {
-    list.replaceChildren(element('div', 'empty-state', state.catalog.mode === 'aws' ? 'No model release events have been published yet. Run the authenticated SageMaker pipeline to create a release audit.' : 'No releases yet. Run the demonstration to see a failed check followed by a passing check.'));
+    list.replaceChildren(element('div', 'empty-state', state.mode === 'aws' ? 'No model release decisions have been published yet.' : 'No releases yet. Run the demonstration to see a failed check followed by a passing check.'));
     return;
   }
   list.replaceChildren(...[...releases].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).map((release) => {
@@ -431,6 +461,7 @@ function renderReleases(releases) {
 }
 
 async function runReleaseDemo() {
+  if (state.mode !== 'local' || $('release-demo-button').disabled) return;
   const request = ++state.releaseRequest;
   const button = $('release-demo-button');
   button.disabled = true;
@@ -473,8 +504,9 @@ function switchView(view, updateHash = true) {
   if (updateHash) history.replaceState(null, '', `#${view}`);
   if (view === 'forecast') renderChart();
   if (view === 'replenishment' && state.forecast && !state.simulation && !$('simulate-button').disabled) simulate();
-  const canLoadReleases = state.catalog?.mode === 'aws' || !$('release-demo-button').disabled;
-  if (view === 'models' && state.catalog && !state.releasesLoaded && canLoadReleases) loadReleases();
+  const canLoadReleases = state.mode === 'aws' || (state.catalog && !$('release-demo-button').disabled);
+  $('release-panel').hidden = view !== 'models' || !canLoadReleases;
+  if (view === 'models' && !state.releasesLoaded && canLoadReleases) loadReleases();
 }
 
 document.querySelectorAll('.nav-button').forEach((button) => button.addEventListener('click', () => switchView(button.dataset.view)));
@@ -499,6 +531,7 @@ $('replay-date').addEventListener('change', () => {
   loadForecast();
 });
 $('retry-button').addEventListener('click', () => state.catalog ? loadForecast() : boot());
+$('check-publication-button').addEventListener('click', boot);
 $('assumptions-form').addEventListener('submit', simulate);
 $('assumptions-form').addEventListener('input', () => {
   ++state.simulationRequest;

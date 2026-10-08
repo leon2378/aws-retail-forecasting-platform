@@ -120,7 +120,7 @@ class LocalRepository:
             ]:
                 new.append({"id": str(uuid4()), "model": model,
                             "status": "Approved" if score <= threshold else "Rejected", "created_at": now,
-                            "reason": reason, "synthetic_demo": True, "workflow_demo": True,
+                            "reason": reason, "synthetic_demo": self.dataset["source"] == "synthetic", "workflow_demo": True,
                             "source": self.dataset["source"],
                             "metrics": {"wape": score, "baseline_wape": baseline_wape,
                                         "threshold": threshold, "cutoff": cutoff}})

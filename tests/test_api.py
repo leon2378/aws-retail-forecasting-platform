@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 from retail_forecast.api import DEFAULT_ASSUMPTIONS, handle_request
+from retail_forecast.data import demo_dataset
 from retail_forecast.storage import DynamoRepository, LocalRepository
 
 
@@ -111,14 +112,20 @@ class PublicationTests(unittest.TestCase):
 
 class LocalIntegrationTests(unittest.TestCase):
     def test_demo_releases_persist_and_do_not_promote_forecast(self):
-        with tempfile.TemporaryDirectory() as folder:
-            repo = LocalRepository(folder)
-            catalog_before = copy.deepcopy(repo.catalog())
-            releases = repo.demo_releases()["releases"]
-            self.assertEqual([r["status"] for r in releases], ["Rejected", "Approved"])
-            self.assertTrue(all(r["workflow_demo"] for r in releases))
-            self.assertEqual(repo.catalog(), catalog_before)
-            self.assertEqual(LocalRepository(folder).releases()["releases"], releases)
+        for source in ("synthetic", "m5"):
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as folder:
+                # Generated fixture exercises source classification; it is not M5 observations.
+                dataset = demo_dataset()
+                dataset["source"] = source
+                repo = LocalRepository(folder, dataset=dataset)
+                catalog_before = copy.deepcopy(repo.catalog())
+                releases = repo.demo_releases()["releases"]
+                self.assertEqual([r["status"] for r in releases], ["Rejected", "Approved"])
+                self.assertTrue(all(r["workflow_demo"] for r in releases))
+                self.assertTrue(all(r["synthetic_demo"] == (source == "synthetic") for r in releases))
+                self.assertTrue(all(r["source"] == source for r in releases))
+                self.assertEqual(repo.catalog(), catalog_before)
+                self.assertEqual(LocalRepository(folder).releases()["releases"], releases)
 
 
 if __name__ == "__main__":

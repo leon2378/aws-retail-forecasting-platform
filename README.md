@@ -4,9 +4,9 @@ A retail demand forecasting and replenishment application, with a local developm
 
 Select a store and product, replay a historical date, inspect the next 28 days of expected sales and approximate uncertainty, and compare inventory policies against held-out historical sales. The model lab compares a seasonal baseline with XGBoost using chronological backtests and demonstrates a rejected release followed by an approved one.
 
-**Data status:** the repository includes a deterministic synthetic generator, not M5 observations. The interface labels it clearly. Import the M5 competition CSVs to use genuine historical sales. Synthetic product names are invented; real M5 items keep their anonymous identifiers.
+**Data status:** the repository includes a deterministic synthetic generator, not M5 observations. The interface labels it clearly. Genuine M5 CSVs have been downloaded and imported privately for local validation: 36 series from CA_1, TX_1 and WI_1, covering 1,941 historical days. A fresh checkout uses synthetic data until you import your own authorized M5 copy. Synthetic product names are invented; real M5 items keep their anonymous identifiers. No genuine M5 rows are distributed in this repository.
 
-**Deployment status:** AWS resources are defined in Terraform and pipeline code. No cloud resources have been provisioned or live AWS execution verified. Local execution does not need AWS credentials.
+**Deployment status:** on 8 October 2026, the 43-resource AWS foundation was deployed and passed 21 live infrastructure, API and frontend smoke checks. All 43 resources were subsequently removed to stop ongoing project charges. Development currently runs locally; there is no active hosted application. The Linux image build, offline ML workflow and inference HTTP protocol have passed local validation. Live SageMaker execution, Model Registry and DynamoDB publication remain unverified. Local execution does not need AWS credentials.
 
 ![Shelfcast forecast workspace using labelled synthetic data](docs/images/forecast-demo.jpg)
 
@@ -63,13 +63,23 @@ Restart an already-running server after importing. The importer writes `data/dat
 
 Real M5 data uses item IDs, not the demo's invented descriptions. Sell prices are retained as descriptive metadata; the current forecasts do **not** use future prices or event information. Keep raw data outside source control; `data/` is ignored.
 
+The documented local validation uses the first 12 items per selected store, all from `HOBBIES_1`, at cutoff 1,913. Across three chronological 28-day backtests, the tested native and Linux environments produced these results:
+
+| Environment and candidate | Pooled WAPE | Average interval coverage | Local release gate |
+|---|---:|---:|---|
+| Both environments · seasonal baseline | 108.07% | 82.34% | Pass at parity |
+| Native Windows · XGBoost 3.4.1 | 109.02% | 76.69% | Reject |
+| Linux image · XGBoost 3.2.0 | 110.21% | 76.36% | Reject |
+
+The environments use different dependency versions, recorded in each rehearsal report; their trained XGBoost results are reported separately. In the native run, XGBoost improved error on 19 of the 36 series and worsened it on 17. Neither run shows an overall XGBoost improvement. This small file-order subset is not representative of the full M5 hierarchy. These are development results, not competition scores or cloud execution results.
+
 ## What the application does
 
 - **Demand forecast:** the chart displays 28 recent observed days and a 28-day forward forecast, with a seasonal comparator and approximate uncertainty band. The API retains 84 observed days for inspection.
 - **Historical replay:** an explicit count of observed days; advancing the replay date reveals one additional day to the model. Historical dates refer to the dataset, not today's calendar.
 - **Model comparison:** a four-week same-weekday mean versus a fitted XGBoost Poisson model with lag, rolling-statistic and calendar features.
 - **Inventory simulation:** fixed-quantity ordering, forecast order-up-to, and a buffered policy, with configurable initial stock, lead time, review period and cost assumptions.
-- **Release demonstration:** a deliberately degraded candidate fails a measured baseline gate; a baseline clone passes a parity gate. It writes a local audit log and does not change the application model or claim improvement.
+- **Release demonstration:** using the current dataset, a deliberately degraded candidate fails a measured holdout baseline gate and a baseline clone passes at parity. It writes an illustrative local audit log and does not promote a trained model, change the application model or claim improvement.
 
 ## Evaluation and interpretation
 
@@ -93,6 +103,20 @@ All savings are **simulation results**, not realized business savings. The best 
 
 Forecast exports exclude held-out future actuals. Tests cover leakage boundaries, chronological splits, dataset validation, stock flows, edge cases, API input validation and publication safeguards. Optional XGBoost tests skip when that dependency is absent; use the ML extra to run them.
 
+Rehearse the ML job stages against your imported M5 archive before creating cloud resources:
+
+```powershell
+./.venv/Scripts/python.exe -m aws.local_validate --dataset data/dataset.json --cutoff 1913 --output build/local-rehearsal
+```
+
+This executes the actual preparation, training and evaluation functions for seasonal and XGBoost candidates, reloads each portable `model.tar.gz` and checks 28-day inference with model fitting prohibited. It checks the held-out label boundary and compares three replenishment policies under default, immediate-delivery and seven-day-delivery assumptions. The measured release decisions and checks appear in `build/local-rehearsal/report.json`. Choose a new or empty output directory for each run; existing artifacts are never removed automatically. `--cutoff` can be omitted to leave the final 28 days as the holdout.
+
+All rehearsal outputs remain local and ignored by Git. No AWS resources or credentials are used. AWS Model Registry, Batch Transform and DynamoDB publication still require live validation. Rejected candidates are inferred locally for inspection only; the AWS release gate would skip their batch and publication. Passing seasonal parity does not establish improved forecast accuracy.
+
+Both the native and Linux 36-series M5 rehearsals passed their checks for 72 unique forecasts and 972 policy simulations each. Their measured gates rejected XGBoost because pooled WAPE exceeded the seasonal baseline, then passed the seasonal candidate at baseline parity. These are actual trained-model gate results, separate from the model lab's illustrative degraded-candidate/baseline-clone exercise.
+
+The Linux image's `/ping` and `/invocations` HTTP routes were also checked against all 72 forecasts from each trained artifact set. Serving matched each artifact's expected output exactly, omitted held-out actuals and rejected invalid requests. This verifies the custom inference protocol locally; it does not replace a SageMaker Batch Transform run.
+
 ## AWS architecture
 
 ```mermaid
@@ -114,6 +138,8 @@ flowchart LR
 
 Terraform defines storage, delivery, IAM roles, compute configuration, logging, and the optional experiment server. SageMaker executes training and batch inference; the API reads materialized results instead of training on a request. The replay cursor advances only after a complete successful publication. Schedules are disabled by default.
 
+A newly deployed foundation has no published forecasts. The frontend checks `/api/health`, identifies AWS mode and shows **Awaiting the first forecast** for the expected empty catalog response. Store selections and inventory comparisons become available after a complete batch is published. AWS release history can be empty, and the local release demonstration is disabled there.
+
 Follow [docs/aws.md](docs/aws.md) for packaging, configuration, deployment order, CI/CD, ClearML and operational limitations. Read and review a Terraform plan before creating billable AWS resources. The local synthetic dataset is suitable for smoke testing infrastructure, not for reporting M5 performance.
 
 Confirm the regional quotas and provisioning-role permissions in the deployment runbook before deploying. See [the API reference](docs/api.md) for response schemas and publication safeguards.
@@ -133,6 +159,6 @@ Confirm the regional quotas and provisioning-role permissions in the deployment 
 
 ## Next production milestones
 
-Import genuine M5 data and establish a baseline on a documented product subset; then validate one AWS replay end to end. Before broader use, add authentication for non-public data, representative global modeling and hierarchy-aware evaluation, cost/load testing, drift monitoring, and tests on actual operational inventory data. All deployed application infrastructure can stay in AWS; local development is intentionally independent.
+Validate one AWS replay end to end, then expand genuine M5 evaluation beyond the documented subset. Before broader use, add authentication for non-public data, representative global modeling and hierarchy-aware evaluation, cost/load testing, drift monitoring, and tests on actual operational inventory data. All deployed application infrastructure can stay in AWS; local development is intentionally independent.
 
 References: [SageMaker Pipelines](https://docs.aws.amazon.com/sagemaker/latest/dg/pipelines.html), [batch inference](https://docs.aws.amazon.com/sagemaker/latest/dg/batch-transform.html), [model approval](https://docs.aws.amazon.com/sagemaker/latest/dg/model-registry-approve.html), and [M5 data](https://www.kaggle.com/competitions/m5-forecasting-accuracy/data).
