@@ -1,4 +1,4 @@
-const TRANSACTION_KEY = 'supplysight.signin.transaction';
+const TRANSACTION_KEY = 'orderflow.signin.transaction';
 const TRANSACTION_TTL = 10 * 60 * 1000;
 const noSession = () => ({ authenticated: false, permissions: {} });
 
@@ -59,7 +59,7 @@ export function createAuthClient({ fetcher = window.fetch.bind(window), cryptoAp
       if (!response.ok) {
         if (response.status === 401 && !publicRequest) expired();
         const message = response.status === 401 ? 'Your session has ended. Sign in again.' : response.status === 403 ? 'Your account does not have permission for this action.' : (typeof data.error === 'string' ? data.error : 'The request could not be completed. Please try again.');
-        throw Object.assign(new Error(message), { status: response.status });
+        throw Object.assign(new Error(message), { status: response.status, code: data.code });
       }
       return data;
     } finally { pending.delete(controller); }
@@ -78,14 +78,14 @@ export function createAuthClient({ fetcher = window.fetch.bind(window), cryptoAp
     const domainMatch = domain.hostname.match(/^[a-z0-9-]+\.auth\.([a-z0-9-]+)\.amazoncognito\.com$/);
     if (domain.protocol !== 'https:' || !domainMatch || !plainUrl(domain) || domain.pathname !== '/' || issuer.protocol !== 'https:' || !plainUrl(issuer) || issuer.hostname !== `cognito-idp.${domainMatch[1]}.amazonaws.com` || !/^\/[A-Za-z0-9_-]+$/.test(issuer.pathname) || !rootUrl(callback) || !rootUrl(logout) || !/^[A-Za-z0-9]{1,128}$/.test(value.client_id || '')) throw new Error('The sign-in configuration could not be verified.');
     const scopes = Array.isArray(value.scopes) ? value.scopes : String(value.scopes || '').split(/\s+/);
-    if (!['openid', 'profile', 'retail/read', 'retail/plan'].every((scope) => scopes.includes(scope)) || scopes.some((scope) => !['openid', 'profile', 'retail/read', 'retail/plan'].includes(scope))) throw new Error('The sign-in permissions are not configured correctly.');
+    if (!['openid', 'profile', 'orderflow/read'].every((scope) => scopes.includes(scope)) || scopes.some((scope) => !['openid', 'profile', 'orderflow/read', 'orderflow/write'].includes(scope))) throw new Error('The sign-in permissions are not configured correctly.');
     return { ...value, domain: domain.origin, callback_url: callback.href, logout_url: logout.href, scopes };
   }
 
   function acceptSession(value) {
     if (!value?.authenticated) { session = noSession(); return session; }
-    if (!['viewer', 'planner'].includes(value.role) || !value.permissions || typeof value.display_name !== 'string' || (config.mode === 'local_demo' && typeof value.csrf_token !== 'string')) throw new Error('Your account permissions could not be verified.');
-    session = { ...value, permissions: { can_simulate: value.permissions.can_simulate === true, can_run_drill: value.permissions.can_run_drill === true, can_demo_release: value.permissions.can_demo_release === true } };
+    if (!['viewer', 'operator', 'admin'].includes(value.role) || !value.permissions || typeof value.display_name !== 'string' || (config.mode === 'local_demo' && typeof value.csrf_token !== 'string')) throw new Error('Your account permissions could not be verified.');
+    session = { ...value, permissions: { can_create: value.permissions.can_create === true, can_retry: value.permissions.can_retry === true, can_drill: value.permissions.can_drill === true, can_manage_inventory: value.permissions.can_manage_inventory === true } };
     sessionExpiresAt = Number.isFinite(value.expires_in) && value.expires_in > 0 ? now() + value.expires_in * 1000 : 0;
     return session;
   }
@@ -125,7 +125,7 @@ export function createAuthClient({ fetcher = window.fetch.bind(window), cryptoAp
       if (!response.ok || value.token_type !== 'Bearer' || typeof value.access_token !== 'string' || value.access_token.length < 8 || value.access_token.length > 16384 || !Number.isInteger(value.expires_in) || value.expires_in < 1 || value.expires_in > 86400) throw new Error('Sign-in could not be completed. Please try again.');
       accessToken = value.access_token;
       tokenExpiresAt = now() + value.expires_in * 1000;
-      const returnView = ['forecast', 'replenishment', 'models', 'operations'].includes(transaction.return_view) ? transaction.return_view : 'forecast';
+      const returnView = ['overview', 'orders', 'inventory', 'recovery'].includes(transaction.return_view) ? transaction.return_view : 'overview';
       historyApi.replaceState(null, '', `/#${returnView}`);
     } finally { pending.delete(controller); }
   }
@@ -144,7 +144,7 @@ export function createAuthClient({ fetcher = window.fetch.bind(window), cryptoAp
     clear();
     if (!config) throw new Error('Sign-in is still connecting. Please try again.');
     if (config.mode === 'local_demo') {
-      if (!['viewer', 'planner'].includes(role)) throw new Error('Choose a preview role.');
+      if (!['viewer', 'operator', 'admin'].includes(role)) throw new Error('Choose a preview role.');
       return acceptSession(await request('/api/auth/login', { method: 'POST', body: JSON.stringify({ role }) }, { publicRequest: true }));
     }
     const state = random();

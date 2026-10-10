@@ -1,102 +1,64 @@
 # Application API
 
-The local Python server and AWS Lambda share the request handler in `retail_forecast/api.py`. The local server loads the imported dataset or the labelled synthetic sample. The AWS API reads completed, materialized forecasts from DynamoDB; it does not train models during requests.
+The local API serves JSON and the static website from one loopback origin. Domain errors use an HTTP status and an `error` message. All application data and actions require a signed-in session; health and local sign-in setup are public.
 
-| Method | Route | Purpose |
+| Method | Route | Purpose and permission |
 |---|---|---|
-| GET | `/api/health` | Server status and local/AWS mode |
-| GET | `/api/auth/config` | Public local-preview or Cognito sign-in configuration |
-| GET | `/api/auth/session` | Current identity and permissions; cloud requires a valid access token |
-| POST | `/api/auth/login` | Loopback-only local role preview; unavailable in AWS |
-| POST | `/api/auth/logout` | End the local cookie session; cloud uses Cognito hosted logout |
-| GET | `/api/catalog` | Data provenance, stores, products, model availability and replay bounds |
-| GET | `/api/forecast` | Historical observations, 28 predictions, backtests and training metadata |
-| POST | `/api/simulate` | Score three replenishment policies on a historical holdout |
-| GET | `/api/releases` | Latest model release events |
-| POST | `/api/releases/demo` | Local illustrative rejection and baseline-parity approval |
-| GET | `/api/operations` | Quality checks, replay progress, checkpoint metadata and audit evidence |
-| POST | `/api/operations/drill` | Run an isolated local recovery drill; forbidden in AWS mode |
+| GET | `/api/health` | Public service and version status |
+| GET | `/api/auth/config` | Public local/Cognito sign-in configuration |
+| GET | `/api/auth/session` | Current sign-in state; local anonymous response is allowed |
+| POST | `/api/auth/login` | Loopback-only role demonstration |
+| POST | `/api/auth/logout` | Revoke local session |
+| GET | `/api/dashboard` | Summary, recent orders and activity; signed-in roles |
+| GET | `/api/catalog` | Synthetic products, USD prices and available stock; signed-in roles |
+| GET | `/api/orders` | Order list with optional `status` and `search`; signed-in roles |
+| GET | `/api/orders/{id}` | One order and its timeline; signed-in roles |
+| POST | `/api/orders` | Reserve and create an order; Operator/Admin |
+| POST | `/api/orders/{id}/cancel` | Cancel unshipped work and compensate; Operator/Admin |
+| GET | `/api/operations` | Work, failures, audit history and drill reports; signed-in roles |
+| POST | `/api/operations/process` | Advance a pass of work; local Operator/Admin only |
+| POST | `/api/operations/retry/{id}` | Recover failed fulfillment; Operator/Admin |
+| POST | `/api/inventory/{sku}/adjust` | Add inventory; Admin |
+| POST | `/api/operations/drill` | Isolated recovery evidence; Admin |
+| GET | `/api/operations/drills/{id}` | Inspect drill evidence; signed-in roles |
 
-Every error response is `{"error":"message"}` with an appropriate HTTP status. Requests use JSON. POST bodies are limited to 16 KB.
+The AWS worker consumes queue messages automatically; the manual `process` route returns a local-only conflict in cloud mode. Cloud drills start asynchronously and the client reads their recorded status. The cloud API does not provide local role login.
 
-## Authorization
+## Order semantics
 
-Health and sign-in configuration are public. All forecast, catalog, release and operations routes require a signed-in identity. Viewer and Planner can read; only Planner can invoke simulation, local recovery and local release demonstrations. AWS continues to reject the two local demonstrations even for a Planner. The API returns 401 for missing/expired authentication and 403 for forbidden actions.
+An order identifies one or more catalog products and positive integer quantities. Prices come from the server's catalog; the client cannot set a price or inventory balance. Payment and fulfillment scenario choices control the labelled simulation only.
 
-Local sign-in accepts only `{"role":"viewer"}` or `{"role":"planner"}`. These are generated preview identities, not real-user credentials. The server returns an opaque HTTP-only cookie and session information, including a CSRF token. Supply the same-origin `Origin` and `X-CSRF-Token` headers for subsequent local POST requests; the browser client manages these automatically.
-
-Cloud requests use an access token in `Authorization: Bearer …`. API Gateway verifies JWTs; Lambda authorizes the verified group's permissions. Client role headers and request parameters never establish access. See [the authentication guide](authentication.md) for PKCE, session handling and the limits of the local preview.
-
-## Selection and replay
-
-Forecast query parameters:
-
-```text
-/api/forecast?store=CA_1&item=FOODS_1_001&cutoff=728&model=xgboost
-```
-
-`cutoff` counts observed days, starting with day 1 on the catalog's `start_date`. It must be an integer of at least 196. The forecast starts on the following day and contains exactly 28 records. The application constrains replay to dates with a complete historical holdout; the API can also produce a final future forecast locally when no scoring labels exist, but simulation then returns an explanatory error.
-
-Models are `seasonal` or `xgboost`. XGBoost is available locally only when the ML dependency is installed; the API never substitutes a baseline while reporting it as XGBoost.
-
-Key forecast fields:
-
-- `source`, `source_label`, `as_of`, `cutoff`, `store_id`, `item_id`, `model`
-- `history`: last 84 observed days, each with `date` and `actual`
-- `forecast`: 28 records with `date`, `p10`, `p50`, `p90`, `baseline`
-- `metrics`: pooled `wape`, `mae`, `bias`, `coverage`, `baseline_wape`
-- `backtests`: three chronological scored folds
-- `training`: split dates, features, interval method and limitations
-- `summary`: total, average, peak and change relative to the previous 28 days
-- `replay`: minimum/maximum cutoff and next-day availability
-
-WAPE, bias, coverage and change fields are fractions, not percentages. WAPE and bias are `null` when demand totals zero; change is `null` when the prior mean is zero. The central `p50` field carries expected units, not an asserted median. The empirical interval is approximate.
-
-## Simulation
+Example order body:
 
 ```json
 {
-  "store_id": "CA_1",
-  "item_id": "FOODS_1_001",
-  "cutoff": 728,
-  "model": "seasonal",
-  "assumptions": {
-    "initial_stock": 120,
-    "lead_time": 7,
-    "review_period": 7,
-    "safety_days": 3,
-    "unit_cost": 4,
-    "holding_cost": 0.02,
-    "stockout_cost": 2,
-    "order_cost": 5
-  }
+  "customer": "Example Studio",
+  "items": [{"sku": "TOTE-001", "quantity": 2}],
+  "scenario": "happy_path",
+  "idempotency_key": "example-request-0001"
 }
 ```
 
-Missing assumptions use the defaults above; unknown fields, nonfinite numbers and invalid bounds are rejected. Initial stock, lead time, review period and safety days must be whole numbers. UI/API lead time and safety days are limited to 28 days, and review period to 1–28 days.
+Customer labels are 1–80 printable characters. Requests have 1–10 distinct products, each with a quantity from 1 to 100. Repeated SKU lines and unrecognized fields are rejected. An idempotency key contains 8–128 letters, digits, dashes or underscores. Scenarios are `happy_path`, `payment_declined`, `fulfillment_retry` and `fulfillment_dead_letter`.
 
-The result includes `policies` (`fixed`, `forecast`, `buffered`), daily stock flows, operating-cost components, procurement spend, fill rate, and `savings`. The savings comparison selects the lower-cost forecast policy after scoring against fixed ordering. Negative savings mean greater simulated cost; a zero baseline cost produces a `null` percentage. The response includes `cost_basis` and `limitations` for display.
+Supply a stable idempotency key when submitting an order. The same identity, key and normalized payload returns the existing order. Reusing the key with changed content returns a conflict. Insufficient available inventory is a conflict, and the failed request must not leave a partial reservation or order.
 
-## AWS publication contract
+New orders return HTTP 201 with `{"order": {...}, "replayed": false}`. An identical replay returns HTTP 200 with the original order and `replayed: true`; a conflict returns HTTP 409. HTTP requests may also provide `Idempotency-Key`, which must agree with the body when both are present. Keep the key in the JSON body when invoking the transport-independent engine directly.
 
-The DynamoDB table has `pk` and `sk` string keys:
+An order moves from `queued` to `processing` and then `completed`, `failed` or `cancelled`. Payment decline marks the order failed, completes its work and releases stock. Fulfillment failures retain the reservation and payment, retry up to three attempts and then mark work `dead_letter`. Recovery changes the simulated provider to a healthy scenario and resumes fulfillment. It is a demonstration repair, not an automatic repair of a real provider.
 
-| Partition | Sort key | Contents |
-|---|---|---|
-| `CATALOG` | `META` | Current completed catalog in `payload` |
-| `SERIES#store#item` | `FORECAST#000000728#model` | Forecast payload and internal scoring labels |
-| `COMPLETED` | `000000728` | Completed batch `run_id` and available models |
-| `REPLAY` | `STATE` | Committed cursor and pending execution lock |
-| `RELEASES` | timestamp/run identifier | Release audit payload |
+Cancellation and retry actions require `{}`. Restocking accepts `{"quantity": 3}` and adds 1–1,000 units. Local processing accepts `{}` or `{"limit": 20}` with a limit from 1 to 20; it advances one current stage of each selected order. A happy order therefore takes two processing passes. A shipment already recorded cannot be cancelled; a returns workflow would be required.
 
-The API requires a completed marker, an available model and a forecast row from that same run. The publisher commits the catalog, marker, release and cursor in one transaction after all rows have been written and checked. An incomplete batch is unavailable to clients. Leading-underscore fields, including held-out actuals and internal run identifiers, are removed from public forecast responses.
+Cancellation atomically releases the reservation, records any simulated refund and discards outgoing work that has not been published. A message already queued may still arrive; the completed cancellation prevents it from advancing the order.
 
-The cloud release workflow is controlled by SageMaker; the application API rejects the local release-demo route. Terraform protects application routes with Cognito-backed JWT authorization. Cloud sign-in and role enforcement still require deployed end-to-end verification before serving private operational datasets.
+Order creation records the reservation and first outgoing work atomically. Background processing advances the workflow and records audit events. Reads do not process work or move inventory. Failed work and an authorized explicit recovery action remain visible in operations history.
 
-## Operations
+## Local request protection
 
-`GET /api/operations` returns `mode`, `scope`, source labels, a `summary`, quality checks, alerts, recent `runs` and `events`, the `latest_drill`, capabilities and limitations. The summary separates historical replay dates from publication timestamps and reports lag in replay days. Unknown cloud execution state is not presented as a successful job.
+The role demonstration creates an opaque cookie session. Subsequent mutating requests need the session's CSRF token and the correct origin. Invalid JSON, unsupported values, oversized bodies and unauthorized actions are rejected without domain mutations. Static file serving must not expose databases, private configuration, source files or parent directories.
 
-`POST /api/operations/drill` accepts an empty JSON object or an optional `request_token` in local mode and returns updated operations status with the drill evidence. Reusing a token returns its recorded result. It does not accept user-selected filesystem paths or arbitrary snapshot contents. The local exercise uses isolated private artifacts and preserves the working dataset. `latest_drill` contains step outcomes, measured local recovery time and proof of input rejection, hidden partial batches, idempotent retry and restored forecast hashes. AWS mode returns HTTP 403.
+Local login accepts only `{"role": "viewer"}`, `operator` or `admin` and requires the server's `Origin`. It returns an HTTP-only cookie and a CSRF token. Send that token in `X-CSRF-Token`, the cookie and the same origin for subsequent POST requests. A local POST requires `application/json`, one `Content-Length`, no transfer encoding and a body of at most 16 KB. API responses disable caching.
 
-Quality reports contain bounded check summaries rather than individual sales observations. Operations responses omit raw datasets, local artifact paths, internal scoring labels and AWS account identifiers. See [the operations guide](operations.md) for execution and evidence requirements.
+Domain errors contain `{"error": "description", "code": "machine_code"}`. Authentication failures are HTTP 401, permission/origin/CSRF failures 403, validation failures 400, missing resources 404, conflicts 409, oversized bodies 413 and unsupported media types 415. Unavailable local storage returns a generic 503 response; private exceptions are logged, not sent to the browser.
+
+Cloud API authentication uses verified authorizer claims, not local cookies or client-selected roles. See [authentication](authentication.md).

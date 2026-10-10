@@ -2,27 +2,28 @@ version: 0.2
 phases:
   install:
     runtime-versions:
-      python: 3.11
-      nodejs: 22
+      python: 3.12
+      nodejs: 20
     commands:
-      - pip install -e '.[ml,aws]'
-  pre_build:
-    commands:
-      - python -m unittest discover -s tests -v
-      - node --check frontend/app.js
-      - node --check frontend/auth.js
-      - node --test tests/frontend_auth.test.mjs tests/frontend_access.test.mjs
-      - aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin "${ECR_URI%%/*}"
-      - export IMAGE_URI="$ECR_URI:build-$CODEBUILD_BUILD_NUMBER"
+      - python -m pip install '.[aws]'
+      - |
+        TERRAFORM_VERSION=1.11.4
+        curl --fail --silent --show-error -O "https://releases.hashicorp.com/terraform/$TERRAFORM_VERSION/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+        curl --fail --silent --show-error -o terraform.sha256 "https://releases.hashicorp.com/terraform/$TERRAFORM_VERSION/terraform_${TERRAFORM_VERSION}_SHA256SUMS"
+        grep " terraform_${TERRAFORM_VERSION}_linux_amd64.zip$" terraform.sha256 | sha256sum --check
+        unzip "terraform_${TERRAFORM_VERSION}_linux_amd64.zip" -d /usr/local/bin
   build:
     commands:
-      - docker build -t "$IMAGE_URI" .
-      - docker push "$IMAGE_URI"
+      - python -m unittest discover -s tests -p 'test_*.py'
+      - node --test tests/*.test.mjs
       - python -m aws.package
-      - python -m aws.pipeline --name "$PROJECT_NAME" --role-arn "$SAGEMAKER_ROLE_ARN" --image-uri "$IMAGE_URI" --bucket "$DATA_BUCKET" --table-name "$RESULTS_TABLE" --model-group "$PROJECT_NAME" --instance-type "$SAGEMAKER_INSTANCE_TYPE"
+      - terraform -chdir=infra fmt -check
+      - terraform -chdir=infra init -backend=false -lockfile=readonly
+      - terraform -chdir=infra validate
+      - terraform -chdir=infra test
 artifacts:
   files:
     - build/lambda.zip
-    - build/pipeline.json
+    - build/manifest.json
     - frontend/**/*
     - aws/buildspec-deploy.yml

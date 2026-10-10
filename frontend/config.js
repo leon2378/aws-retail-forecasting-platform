@@ -1,3 +1,3 @@
-// Set this to the API Gateway base URL when deploying the frontend on S3/CloudFront.
-// A same-origin local server needs no configuration.
+// Leave empty for the local server and the prepared CloudFront /api/* routing.
+// Set a secure API Gateway base URL only when hosting the API on another origin.
 window.API_BASE = window.API_BASE || '';

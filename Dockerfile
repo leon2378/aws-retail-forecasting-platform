@@ -1,11 +1,8 @@
-FROM python:3.11-slim
-ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1
+FROM python:3.12-slim
 WORKDIR /app
-RUN apt-get update && apt-get install --no-install-recommends -y libgomp1 && rm -rf /var/lib/apt/lists/*
-COPY aws/requirements-image.txt /app/requirements-image.txt
-RUN pip install --no-cache-dir -r requirements-image.txt
-COPY retail_forecast /app/retail_forecast
-COPY aws /app/aws
-EXPOSE 8080
-ENTRYPOINT ["python", "-m", "aws.jobs"]
-CMD ["train"]
+COPY pyproject.toml README.md ./
+COPY orderflow ./orderflow
+COPY frontend ./frontend
+RUN pip install --no-cache-dir . && useradd --create-home --uid 10001 appuser && mkdir -p /app/data /app/build && chown appuser /app/data /app/build
+USER appuser
+CMD ["python", "-m", "orderflow", "drill", "--database", "/app/data/orderflow.sqlite3"]

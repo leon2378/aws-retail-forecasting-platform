@@ -16,13 +16,12 @@ import time
 from urllib.parse import urlsplit
 
 
-ROLES = ("viewer", "planner")
-PERMISSIONS = ("can_simulate", "can_run_drill", "can_demo_release")
-COOKIE_NAME = "supplysight_session"
+ROLES = ("viewer", "operator", "admin")
+PERMISSIONS = ("can_create", "can_retry", "can_drill", "can_manage_inventory")
+COOKIE_NAME = "orderflow_session"
 TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43}$")
 PUBLIC_ROUTES = {("GET", "/api/health"), ("GET", "/api/auth/config"), ("GET", "/api/auth/session")}
-PLANNER_ROUTES = {("POST", "/api/simulate"), ("POST", "/api/operations/drill"),
-                  ("POST", "/api/releases/demo")}
+
 
 
 @dataclass(frozen=True)
@@ -32,6 +31,7 @@ class Principal:
     display_name: str
     source: str
     expires_at: int | None = None
+    scopes: tuple[str, ...] = ()
 
     def __post_init__(self):
         if self.role not in ROLES or self.source not in ("local_demo", "cognito"):
@@ -44,7 +44,8 @@ class Principal:
 
     def session(self, csrf_token=None):
         session = {"authenticated": True, "role": self.role, "display_name": self.display_name,
-                   "permissions": {name: self.role == "planner" for name in PERMISSIONS}}
+                   "permissions": {name: ((self.source == "local_demo" or "orderflow/write" in self.scopes)
+                       and (self.role == "admin" or (self.role == "operator" and name in ("can_create", "can_retry")))) for name in PERMISSIONS}}
         if csrf_token is not None:
             session["csrf_token"] = csrf_token
         if self.expires_at is not None:
@@ -81,11 +82,15 @@ def authorize(method, path, principal):
     if (method, path) in PUBLIC_ROUTES:
         return None
     if not isinstance(principal, Principal):
-        return 401, {"error": "Sign in to access SupplySight."}
+        return 401, {"error": "Sign in to access OrderFlow.", "code": "unauthorized"}
     if principal.expires_at is not None and principal.expires_at <= time.time():
-        return 401, {"error": "Your session expired. Sign in again."}
-    if (method, path) in PLANNER_ROUTES and principal.role != "planner":
-        return 403, {"error": "Planner permission is required for this action."}
+        return 401, {"error": "Your session expired. Sign in again.", "code": "session_expired"}
+    if method == "POST" and principal.source == "cognito" and "orderflow/write" not in principal.scopes:
+        return 403, {"error": "The access token does not include write permission.", "code": "scope_required"}
+    if method == "POST" and principal.role == "viewer":
+        return 403, {"error": "Operator permission is required for this action.", "code": "forbidden"}
+    if method == "POST" and (path == "/api/operations/drill" or path.startswith("/api/inventory/")) and principal.role != "admin":
+        return 403, {"error": "Administrator permission is required for this action.", "code": "forbidden"}
     return None
 
 
@@ -135,7 +140,7 @@ def verified_cognito_principal(event, environment, now=None):
     if claims.get("client_id") != environment.get("AUTH_CLIENT_ID"):
         return None
     scope = claims.get("scope")
-    if not isinstance(scope, str) or len(scope) > 4096 or "retail/read" not in scope.split():
+    if not isinstance(scope, str) or len(scope) > 4096 or "orderflow/read" not in scope.split():
         return None
     now = time.time() if now is None else now
     expiry, issued = _timestamp(claims.get("exp")), _timestamp(claims.get("iat"))
@@ -145,10 +150,10 @@ def verified_cognito_principal(event, environment, now=None):
     if not isinstance(subject, str) or not subject or len(subject) > 256 or any(ord(c) < 32 for c in subject):
         return None
     groups = _groups(claims.get("cognito:groups"))
-    role = "planner" if "planner" in groups else "viewer" if "viewer" in groups else None
+    role = "admin" if "admin" in groups else "operator" if "operator" in groups else "viewer" if "viewer" in groups else None
     if role is None:
-        raise PermissionError("Access is not assigned. Ask an administrator to add you to viewer or planner.")
-    return Principal(subject, role, f"{role.title()} account", "cognito", int(expiry))
+        raise PermissionError("Access is not assigned. Ask an administrator to add you to viewer, operator or admin.")
+    return Principal(subject, role, f"{role.title()} account", "cognito", int(expiry), tuple(scope.split()))
 
 
 def loopback_host(host):
@@ -199,14 +204,14 @@ class SessionStore:
 
     def create(self, role, previous_token=None):
         if role not in ROLES:
-            raise ValueError("Choose viewer or planner for the local demonstration")
+            raise ValueError("Choose viewer, operator or admin for the local demonstration")
         with self._lock:
             self._prune()
             self.delete(previous_token)
             while len(self._sessions) >= self.maximum:
                 self._sessions.pop(next(iter(self._sessions)))
             token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-            principal = Principal(secrets.token_hex(16), role, f"Local demo {role}", "local_demo")
+            principal = Principal("local-" + role, role, f"Local demo {role}", "local_demo")
             self._sessions[self._key(token)] = {"principal": principal, "csrf": csrf,
                                                 "expires": self.clock() + self.lifetime}
             return token, {**principal.session(csrf), "expires_in": self.lifetime}

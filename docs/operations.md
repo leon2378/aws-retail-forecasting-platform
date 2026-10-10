@@ -1,75 +1,80 @@
-# Operations, snapshot checks and recovery
+# Operations and recovery
 
-SupplySight's Operations view provides evidence about forecast availability, input quality and recovery. Local checks and drills are labelled as local execution. They do not establish cloud uptime, AWS recovery times or improved forecast accuracy.
+The local dashboard exposes order progress, inventory, pending work, retries, failed work and audit events. All payments, refunds and shipments are simulated. Operations evidence should show a specific invariant and its measured result, not simply that a button completed.
 
-## Inspect the workspace
+## Recovery exercise
 
-Start the local server and open the **Operations** tab. The view is independent of store and product selection and remains accessible before a first AWS forecast is published.
+Use the isolated recovery drill in the local application. Its temporary database does not alter the orders displayed in the workspace. Inspect the evidence for:
 
-Sign in first. Viewer can inspect Operations; Planner can run the local recovery action. The local role selector is an access preview, and Python commands run with the workspace owner's access. See [the sign-in guide](authentication.md).
+- a duplicate order returning the original order without another reservation;
+- competing reservations never making inventory negative;
+- interruption after a simulated external effect, followed by a retry that reuses that effect;
+- exhausted work becoming visible as failed work;
+- an authorized recovery action resuming the order without a second payment.
 
-The dashboard reports the accepted snapshot, seasonal checkpoint, publication time, replay cutoff, expected replay progress, quality checks and recent audit events. Historical source dates and execution timestamps have different meanings: M5 observations from 2016 are not automatically stale. Replay lag compares expected and published historical days.
+Keep the drill output with the release's verification evidence. A local drill is not evidence of live SQS redelivery, DynamoDB concurrency or a real commerce provider's behavior.
 
-The dashboard does not invent latency, availability or completed AWS job statistics. An unverified or pending cloud execution is identified as such. Cloud access is read-only; the recovery action is disabled in AWS mode.
-
-Export the local status:
-
-```powershell
-./.venv/Scripts/python.exe -m retail_forecast operations --data-dir data --output build/operations-status.json
-```
-
-## Validate a snapshot
-
-The quality gate accepts the normalized JSON produced by the M5 importer or synthetic generator. It checks the structure, supported source classification, calendar range, store/product identities, day counts and finite, nonnegative whole sales. An accepted snapshot can define the expected product set so accidentally missing products are blocked.
-
-Changes in observed sales volume are warnings for review. Legitimate seasonality or promotions do not automatically make a snapshot invalid. Shift checks use only observations available at the requested cutoff, without consulting later scoring labels. Source labels describe the supplied input; validation does not establish dataset authenticity. These volume checks are simple heuristics and do not constitute a calibrated drift detector.
+For an inspectable terminal report:
 
 ```powershell
-./.venv/Scripts/python.exe -m retail_forecast validate-snapshot data/dataset.json --cutoff 1913 --output build/snapshot-quality.json
+python -m orderflow drill --database data/orderflow.db
 ```
 
-For a subsequent arrival, compare its identities with the accepted snapshot:
+The drill has nine checks and returns `passed`, `status`, measured duration and per-check details. It adds its evidence to the workspace but keeps test orders and inventory isolated.
+
+Payment-decline stock release is checked separately by the acceptance suite and can be explored using the application's labelled payment-decline scenario.
+
+## Handling failed work
+
+Inspect the order's latest error and audit history before recovering it. A known simulated scenario can be repaired through the application's explicit recovery action. Retrying a permanently failing integration without correcting its cause is not remediation.
+
+Cancelling an unshipped order releases stock and discards its pending outgoing work in the same transaction. Already queued messages can still arrive and are ignored by the terminal order's work guard. Cancellation cannot retract a recorded shipment.
+
+When integrating a real provider, use the order/effect identifier to check its recorded result before submitting another request. If the provider's outcome is uncertain, reconcile it first. Operators must not create a new order merely to bypass an existing idempotency record.
+
+In AWS, the application's failed-work record and the SQS dead-letter queue are separate views. The API's retry action repairs the simulation state and emits new outgoing work; it does not delete historical SQS dead-letter messages. Inspect, retain or acknowledge those messages separately after confirming the order recovered. A queue alarm can therefore remain active after the application's recovery has completed. Do not redrive an entire queue without checking the affected orders and provider outcomes.
+
+## Backups and restoration
+
+The local SQLite database contains the application's orders, reservations, work, effect outcomes and audit records. Keep all of them together. Copying just the order table can lose the information that prevents repeated effects.
+
+Use the application's backup operation rather than copying a live SQLite file. Restore into a separate database, verify its integrity and inspect representative orders and work before choosing it for the server. Stop the server and workers before replacing an active database. Keep the previous database until the restored application has been checked.
 
 ```powershell
-./.venv/Scripts/python.exe -m retail_forecast validate-snapshot build/candidate.json --expected data/dataset.json --cutoff 1913 --output build/candidate-quality.json
+python -m orderflow backup data/backups/orderflow-001.db --database data/orderflow.db
+python -m orderflow seed --database data/restored-orderflow.db
+python -m orderflow restore data/backups/orderflow-001.db --database data/restored-orderflow.db
+python -m orderflow validate --database data/restored-orderflow.db
+python -m orderflow serve --database data/restored-orderflow.db --empty
 ```
 
-A failed gate writes a report and exits with status 1. It does not start training. Existing artifacts are not replaced by an invalid candidate. Keep candidate data and reports private; `data/` and `build/` are ignored by Git. Use a cutoff compatible with your imported dataset; 1,913 is specific to the documented M5 evaluation subset.
+Stop the existing server before starting this restored instance on the same port. A backup is reported verified only after SQLite integrity and domain checks pass. `restore` validates the candidate and writes a timestamped safety backup of the target before replacing its state. It refuses a missing target workspace. Use a freshly seeded target as above if the current workspace is corrupt. A successful `validate` checks domain consistency; inspect the recovered workflow as well.
 
-The gate also runs during AWS ingestion and preparation. Invalid arrivals retain the published catalog and committed replay cursor, record a bounded quality report, and do not start a SageMaker execution. Cloud orchestration still requires live verification before schedules are enabled.
+Backups are private generated files and must remain outside Git. The demo database contains synthetic commerce records; that does not justify putting future customer data in source control.
 
-Routine arrivals must retain the accepted source, start date and product identities. Appended days are allowed; shrinking history is blocked. An explicit `import-m5` command approves a new contract, so switching from the synthetic demo to M5 remains possible. Imports pass the gate and create a verified checkpoint before atomically replacing the source file; earlier checkpoints and audit events are retained.
+Restoring an older snapshot also rolls back its recorded effects. A future real provider may have succeeded after that snapshot was taken. Reconcile those external outcomes before resuming work; local restoration cannot undo a real payment or shipment.
 
-This scoped in-memory workflow limits snapshots to 16 MiB and one million daily observations. The documented 36-series subset fits those limits. Processing the full M5 series requires a streaming or partitioned ingestion path. Start AWS runs through the ingestion handler: a direct manual pipeline invocation checks structural quality in preparation but does not compare its source against the accepted catalog contract.
+The AWS plan uses DynamoDB recovery controls. Live point-in-time recovery and a restore into a replacement table still need to be exercised after deployment. A recovery setting alone does not prove restoration works or establish a recovery time objective.
 
-## Run the recovery drill
+## Stop charges and remove resources
 
-Choose **Run recovery drill** in Operations, or run:
+The temporary Sydney deployment was tested, backed up and removed on 10 October 2026. No active OrderFlow infrastructure remains. Local commands and tests do not start AWS resources.
 
-```powershell
-./.venv/Scripts/python.exe -m retail_forecast recovery-drill --data-dir data --output build/recovery-drill.json
-```
+For a future deployment, stop new work before teardown:
 
-The drill creates an isolated private copy of the current dataset. It exercises real local forecast artifacts and persisted publication state:
+1. Set `schedule_enabled=false` for scheduled outbox repair and stop CI deployment triggers.
+2. Set `api_enabled=false`, `worker_enabled=false` and `outbox_enabled=false` for the intended stack, review and apply that incident plan, and inspect in-flight orders. Zero API stage throttles stop new requests; disabled event mappings stop new consumption. Stop only the stack's running recovery executions. Pausing new work does not interrupt a Lambda invocation already running, so wait at least the longest configured function timeout plus a margin.
+3. Save the Terraform state, outputs, database entities, logs and workflow evidence privately. Validate the database and verify the backup's hashes. Include every S3 object version and delete marker in the bucket inventory; copying only current website files is incomplete.
+4. After verifying the backup, review and apply `table_deletion_protection_enabled=false` while keeping API, workers and scheduling disabled. Review a destroy plan against the intended environment and account. Empty only the stack's explicitly identified, owned website/artifact buckets, including all backed-up versions and delete markers, then apply the reviewed destroy plan. Never use account-wide deletion.
+5. Check retained resources: DynamoDB tables/backups, S3 object versions, ECR images, log groups and any independently created resources. Retention and deletion protection can intentionally leave billable data behind.
+6. Confirm the stack is absent using resource inventory, then revisit billing after reporting delay. An empty Terraform state does not prove the entire account has no charges.
 
-1. Publish and verify a complete seasonal baseline batch.
-2. Submit invalid input and confirm the quality gate blocks publication.
-3. Interrupt a valid batch before its commit and confirm partial results remain unavailable.
-4. Retry the same run safely and confirm it is committed once.
-5. Restore the previous verified checkpoint and compare its forecast hashes before and after recovery.
+Cost monitoring and notification resources can also be billable or retained. Read [costs and alerts](costs-and-alerts.md) before deployment. Do not remove unrelated account resources in an effort to make the account bill zero.
 
-The result records each check, audit events and measured local recovery time. The working dataset and model-release demonstration are preserved. Deliberately modified drill input is fault injection, not additional authentic M5 data or an accuracy experiment.
+The exercised shutdown archived a revision-stable snapshot and all 79 raw database entities, six log groups, workflow evidence and all six website object versions. Hash verification passed before the buckets were emptied. Terraform removed all 82 managed resources; a separate AWS inventory found all 22 checked resource categories empty and no billable user-created backups. The pre-existing deployment role was independently verified as preserved. One automatically retained DynamoDB SYSTEM backup remains for up to 35 days at no additional cost. [DynamoDB backup pricing](https://aws.amazon.com/dynamodb/pricing/)
 
-Run histories, accepted datasets, quarantine reports and checkpoint artifacts remain under the local data directory's `operations/` folder. These files contain private data and are excluded from source control. Restart verification checks artifact integrity; a saved success label alone does not prove a valid checkpoint exists.
+The archive remains local and private. Database recovery into a replacement AWS table was not tested, so neither the local archive nor the retained SYSTEM backup establishes a cloud restoration time objective. Billing for the short test may appear after the resources have been removed.
 
-A workspace file lock prevents the server and a separate command from writing operations state simultaneously. If another writer is active, retry after it completes. The dashboard reloads the persisted audit journal when refreshed.
+## Release evidence
 
-On 8 October 2026, the 36-series M5 drill passed in native Windows and the Linux image. Both runs passed all four recovery proofs, preserved their working source files, and restored matching forecast hashes. The complete 109-test suite also passed on both platforms. Reports stay private under `build/`; the repository screenshot uses labelled synthetic data.
-
-## Evidence required before cloud readiness claims
-
-Repeat one complete approved AWS replay, verify an invalid arrival starts no ML job, and perform a controlled failure/recovery exercise against the deployed environment. Attach measured outcomes and timestamps to the incident report. Local drill timings are not AWS service-level objectives or recovery guarantees.
-
-Keep schedules and optional experiment infrastructure disabled during those checks. Review the deployment plan and cost controls separately; none of the local commands above creates AWS resources.
-
-The [cost and failure alert guide](costs-and-alerts.md) describes opt-in AWS notifications, delivery verification and a scoped stop-and-cleanup procedure. These are deployment controls; this dashboard does not display live budget usage or prove that an email was delivered.
+Before hosting the application, record the tested commit, local behavior tests, frontend check and validated infrastructure plan. After hosting, add evidence of real sign-in and role denial, an end-to-end order, retries/dead letters, recovery, alert delivery and database restoration. Run representative concurrency and load tests before making throughput or availability claims.

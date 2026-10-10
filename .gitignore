@@ -13,6 +13,14 @@ build/
 *.tfvars
 *.tfvars.json
 .env
+.env.*
+!.env.example
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
 clearml.conf
 kaggle.json
 access_token

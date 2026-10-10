@@ -1,58 +1,64 @@
-import contextlib
-import csv
-from datetime import date, timedelta
-import io
+"""Administration failures must leave working records intact and return useful errors."""
+from contextlib import redirect_stdout
+from io import StringIO
 import json
 from pathlib import Path
-import tempfile
+from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
 
-from retail_forecast.cli import main
-from retail_forecast.download import DownloadError
+from orderflow.cli import main
+from orderflow.engine import Engine, validate_state
+from orderflow.storage import SQLiteRepository
 
 
-class DownloadCommandTests(unittest.TestCase):
-    def test_download_then_import_validates_real_csv_structure(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            folder = Path(temporary) / "m5"
-            output = Path(temporary) / "dataset.json"
+class AdministrationTests(unittest.TestCase):
+    def setUp(self):
+        scratch = Path(__file__).resolve().parents[1] / "build"
+        scratch.mkdir(exist_ok=True)
+        self.workspace = TemporaryDirectory(dir=scratch)
+        self.database = Path(self.workspace.name) / "orders.db"
+        self.repository = SQLiteRepository(self.database)
+        self.engine = Engine(self.repository)
 
-            def download(target, force):
-                self.assertEqual(target, folder)
-                self.assertFalse(force)
-                target.mkdir()
-                with (target / "calendar.csv").open("w", newline="", encoding="utf-8") as stream:
-                    writer = csv.writer(stream)
-                    writer.writerow(["d", "date", "wm_yr_wk"])
-                    for i in range(224):
-                        writer.writerow([f"d_{i + 1}", (date(2011, 1, 29) + timedelta(days=i)).isoformat(), 11101])
-                with (target / "sales_train_evaluation.csv").open("w", newline="", encoding="utf-8") as stream:
-                    writer = csv.writer(stream)
-                    writer.writerow(["item_id", "dept_id", "cat_id", "store_id"] + [f"d_{i + 1}" for i in range(224)])
-                    writer.writerow(["FOODS_1_001", "FOODS_1", "FOODS", "CA_1"] + [2] * 224)
-                (target / "sell_prices.csv").write_text(
-                    "store_id,item_id,wm_yr_wk,sell_price\nCA_1,FOODS_1_001,11101,3.5\n", encoding="utf-8")
+    def tearDown(self):
+        self.workspace.cleanup()
 
-            with patch("retail_forecast.download.download_m5", side_effect=download) as mocked, contextlib.redirect_stdout(io.StringIO()):
-                main(["download-m5", "--folder", str(folder), "--import", "--stores", "CA_1",
-                      "--max-items", "1", "--output", str(output)])
-            mocked.assert_called_once()
-            result = json.loads(output.read_text(encoding="utf-8"))
-            self.assertEqual(result["source"], "m5")
-            self.assertEqual(result["total_days"], 224)
-            self.assertEqual(len(result["series"]), 1)
-            self.assertEqual(result["series"][0]["store_id"], "CA_1")
-            self.assertEqual(result["series"][0]["values"], [2] * 224)
+    def invoke(self, *arguments):
+        output = StringIO()
+        with redirect_stdout(output):
+            status = main([*arguments, "--database", str(self.database)])
+        return status, json.loads(output.getvalue())
 
-    def test_download_failure_preserves_existing_import_and_reports_guidance(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            output = Path(temporary) / "dataset.json"
-            output.write_text('{"source":"existing"}', encoding="utf-8")
-            errors = io.StringIO()
-            with patch("retail_forecast.download.download_m5", side_effect=DownloadError("Run kaggle auth login")), contextlib.redirect_stderr(errors):
-                with self.assertRaises(SystemExit) as stopped:
-                    main(["download-m5", "--import", "--output", str(output)])
-            self.assertEqual(stopped.exception.code, 2)
-            self.assertIn("Run kaggle auth login", errors.getvalue())
-            self.assertEqual(json.loads(output.read_text(encoding="utf-8")), {"source": "existing"})
+    def test_invalid_processing_limit_is_structured_and_does_not_change_state(self):
+        before = self.repository.load()
+        status, result = self.invoke("process", "--limit", "0")
+        self.assertEqual(status, 1)
+        self.assertEqual(result["code"], "invalid_input")
+        self.assertEqual(self.repository.load(), before)
+
+    def test_corrupt_restore_reports_error_and_retains_live_state_and_safety_backup(self):
+        candidate = self.repository.backup(Path(self.workspace.name) / "candidate.db")
+        SQLiteRepository(candidate).transact(lambda state: state["inventory"].update({"TOTE-001": None}))
+        before = self.repository.load()
+        status, result = self.invoke("restore", str(candidate))
+        self.assertEqual(status, 1)
+        self.assertEqual(result["code"], "local_error")
+        self.assertEqual(self.repository.load(), before)
+        backups = list(self.database.parent.glob("orders-before-restore-*.db"))
+        self.assertEqual(len(backups), 1)
+        validate_state(SQLiteRepository(backups[0]).load())
+
+    def test_cancellation_discards_unpublished_work_and_late_delivery_is_ignored(self):
+        order, _ = self.engine.submit({"customer": "Cancelled studio", "items": [{"sku": "TOTE-001", "quantity": 2}],
+                                      "idempotency_key": "cancel-request-001"})
+        self.engine.cancel(order["id"])
+        state = self.repository.load()
+        self.assertEqual({row["status"] for row in state["outbox"].values()}, {"discarded"})
+        self.assertEqual(self.engine.operations()["outbox_pending"], 0)
+        self.assertEqual(self.engine.process_order(order["id"], expected_stage="payment")["outcome"], "ignored")
+        self.assertEqual(self.repository.load(), state)
+        validate_state(state)
+
+
+if __name__ == "__main__":
+    unittest.main()

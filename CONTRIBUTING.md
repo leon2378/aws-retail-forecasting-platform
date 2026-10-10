@@ -1,14 +1,17 @@
 # Project maintenance
 
-This portfolio project is maintained by **Leon Lusbo** ([leon2378](https://github.com/leon2378)).
+OrderFlow is maintained by **Leon Lusbo** ([leon2378](https://github.com/leon2378)). Keep the repository name unchanged until its owner requests a rename.
 
-Use the owner's configured Git identity for repository commits. Commit messages should describe the implemented behavior and validation, without co-author trailers or tool branding. Apply the same convention to documentation, source comments and generated assets.
+Use the owner's configured Git identity for commits. Describe implemented behavior and validation without co-author trailers or tool branding. Apply the same convention to documentation, source comments and generated assets.
 
-Before publishing changes:
+Before publishing a change:
 
-1. Run the Python behavior tests and frontend syntax check.
-2. Format and validate Terraform when infrastructure changes.
-3. Check that datasets, credentials, local configuration, Terraform state and build outputs are excluded.
-4. Keep synthetic data, approximate uncertainty, and simulated savings explicitly labelled.
+1. Run the Python behavior and HTTP security tests, and the frontend syntax check.
+2. Format and validate Terraform when infrastructure changes. A successful local validation is not a live deployment test.
+3. Check that credentials, local configuration, databases, backups, Terraform state and generated outputs remain excluded from Git.
+4. Label the synthetic catalog, local role demonstration and simulated commerce explicitly.
+5. Check the inventory, idempotency, durable outbox and recovery invariants affected by the change.
 
-AWS deployment requires a reviewed plan, a provisioning role with suitable permissions, and confirmed regional quotas. Keep schedules and optional experiment infrastructure disabled until an end-to-end replay has been validated.
+The current work is local. Do not provision resources, enable schedules or incur AWS charges as part of routine development. A deployment needs a concrete reviewed plan, suitable permissions, an account and quota check, budget configuration and an explicit decision to proceed. Preserve private settings and ignored data when replacing obsolete application files.
+
+Do not claim production readiness from code or unit tests alone. Record which deployment, load, alert delivery, restore and external integration checks have actually run, and keep unresolved boundaries visible.

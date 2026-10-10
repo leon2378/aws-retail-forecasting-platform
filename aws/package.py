@@ -1,26 +1,42 @@
-"""Build dependency-light Lambda and CodePipeline source archives offline."""
+"""Build Lambda and explicitly allowlisted delivery archives without network access."""
 import argparse
+import hashlib
+import json
 import zipfile
 from pathlib import Path
+
+EXCLUDED_SUFFIXES = (".tfstate", ".tfstate.backup", ".tfplan", ".tfvars", ".tfvars.json", ".pyc", ".zip", ".pem")
+
+
+def eligible(path, root):
+    parts = path.relative_to(root).parts
+    return (path.is_file() and not any(part.startswith(".") or part == "__pycache__" for part in parts)
+            and not path.name.endswith(EXCLUDED_SUFFIXES) and ".tfstate" not in path.name)
 
 
 def package(root, output):
     root, output = Path(root), Path(output)
     output.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output / "lambda.zip", "w", zipfile.ZIP_DEFLATED) as archive:
-        for folder in ["retail_forecast", "aws"]:
+        for folder in ("orderflow", "aws"):
             for path in sorted((root / folder).rglob("*.py")):
-                if "__pycache__" not in path.parts:
-                    archive.write(path, path.relative_to(root))
+                if eligible(path, root):
+                    archive.write(path, path.relative_to(root).as_posix())
     with zipfile.ZipFile(output / "source.zip", "w", zipfile.ZIP_DEFLATED) as archive:
-        for folder in ["retail_forecast", "aws", "frontend", "tests", "infra"]:
+        for folder in ("orderflow", "aws", "frontend", "tests", "infra", "docs"):
             for path in sorted((root / folder).rglob("*")):
-                if (path.is_file() and not any(part.startswith(".") or part == "__pycache__" for part in path.relative_to(root).parts)
-                        and ".tfstate" not in path.name and not path.name.endswith((".tfplan", ".tfvars", ".tfvars.json"))):
-                    archive.write(path, path.relative_to(root))
-        for filename in ["Dockerfile", ".dockerignore", "buildspec.yml", "pyproject.toml"]:
-            if (root / filename).exists():
-                archive.write(root / filename, filename)
+                if eligible(path, root):
+                    archive.write(path, path.relative_to(root).as_posix())
+        for name in ("Dockerfile", ".dockerignore", "buildspec.yml", "pyproject.toml", "README.md", "CONTRIBUTING.md"):
+            path = root / name
+            if path.exists():
+                archive.write(path, name)
+        lock = root / "infra/.terraform.lock.hcl"
+        if lock.is_file():
+            archive.write(lock, "infra/.terraform.lock.hcl")
+    manifest = {name: {"sha256": hashlib.sha256((output / name).read_bytes()).hexdigest(),
+                       "bytes": (output / name).stat().st_size} for name in ("lambda.zip", "source.zip")}
+    (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return output / "lambda.zip", output / "source.zip"
 
 

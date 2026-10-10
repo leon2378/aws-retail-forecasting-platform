@@ -3,20 +3,17 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "shelfcast"
-version = "0.1.0"
-description = "Retail demand forecasting, historical replay, and replenishment simulations on AWS"
+name = "orderflow"
+version = "1.0.0"
+description = "Order processing, inventory reservations and failure recovery on AWS"
 requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-ml = ["xgboost>=2.1,<4", "numpy>=1.26,<3"]
 aws = ["boto3>=1.35,<2"]
-tracking = ["clearml>=1.16,<3"]
-data = ["kaggle>=2.2.4,<3"]
 
 [project.scripts]
-shelfcast = "retail_forecast.cli:main"
+orderflow = "orderflow.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["retail_forecast*", "aws*"]
+include = ["orderflow*", "aws*"]

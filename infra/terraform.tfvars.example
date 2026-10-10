@@ -1,27 +1,12 @@
 region = "ap-southeast-2"
-project = "retail-forecast"
+project = "orderflow"
+lambda_zip = "../build/lambda.zip"
 schedule_enabled = false
-initial_cutoff = 196
-candidate_model = "seasonal"
-sagemaker_instance_type = "ml.m5.xlarge"
-# After the foundation is applied and the model image is pushed:
-# pipeline_definition_file = "../build/pipeline.json"
+api_enabled = true
+worker_enabled = true
+outbox_enabled = true
 enable_delivery = false
-enable_clearml = false
 monitoring_enabled = false
 monthly_budget_usd = 10
-# Put the recipient only in ignored terraform.tfvars, then review a new plan:
-# alert_email = "you@example.com"
-# Budget covers all account spend before credits/refunds/discounts. No hard cap.
-# Confirm the SNS subscription email after a later approved deployment.
-# Cognito sign-in is mandatory for AWS API results and simulations. Users and
-# viewer/planner memberships are invited/assigned outside Terraform by an operator.
-# The CloudFront root is automatically registered for sign-in and sign-out.
-# Explicit optional callback roots for a later Cognito-connected local preview:
-# Registration does not switch the app's default CloudFront callback. A preview
-# must use matching reviewed callback/sign-out settings in its auth configuration.
-# auth_additional_callback_urls = ["http://127.0.0.1:8000/"]
-# auth_additional_logout_urls = ["http://127.0.0.1:8000/"]
-# clearml_vpc_id = "vpc-..."
-# clearml_subnet_id = "subnet-..."
-# clearml_ami_id = "ami-..." # reviewed server image; must include SSM Agent
+# Set alert_email privately in ignored terraform.tfvars before enabling notifications.
+# Cognito identities and group memberships are administered after deployment.

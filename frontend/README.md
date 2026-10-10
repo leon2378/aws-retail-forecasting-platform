@@ -1,13 +1,33 @@
-# SupplySight frontend
+# OrderFlow frontend
 
-Dependency-free HTML, CSS, and ES modules. No build step or third-party CDN is required. Start the repository's Python server, then open its local URL; opening `index.html` directly cannot provide the API.
+A dependency-free browser application for the OrderFlow API. The workspace includes an operations overview, searchable orders, inventory reservations and recovery controls. Payments and shipping are explicitly simulated.
 
-`config.js` uses the same origin by default. The supplied CloudFront distribution forwards `/api/*` to API Gateway, so no URL change is needed for that deployment. A separately hosted frontend can set `window.API_BASE` to an API Gateway HTTPS base URL; that alternative also needs an explicit CORS configuration for its frontend origin.
+Run the local server described in the repository README and open its URL. The server serves this folder and the API from the same origin.
 
-The three views share a store, product, model, and replay cutoff. All analytical figures come from the HTTP API; the demo always labels synthetic data. The daily chart supports pointer inspection and, when focused, Left/Right/Home/End keys. The baseline checkbox toggles its comparison line. Assumption changes invalidate the old simulation, and the user can submit the form to rerun it.
+## Access
 
-At startup the frontend reads `/api/health` to identify local or AWS mode before requesting `/api/catalog`. An AWS catalog HTTP 404 with the expected unpublished-result message shows **Awaiting the first forecast**. Store, product, replay and simulation controls stay disabled until a complete batch is available. **Check for published forecasts** retries initialization. Other API failures display an error rather than the publication state.
+Local evaluation offers Viewer, Operator and Administrator roles. Local sessions use server-issued HttpOnly cookies and a CSRF token on mutations. AWS mode uses Cognito authorization code flow with PKCE; access tokens remain in memory, and roles and action permissions come from the API. Role selection is unavailable in AWS mode.
 
-The model lab's release action is an explicitly labelled illustrative workflow in local mode. It uses the current dataset, with a deliberately degraded candidate and a baseline clone. Records have `workflow_demo: true`; `synthetic_demo` is true only when the source dataset is synthetic. This exercise does not promote a trained model or establish forecast improvement, and is distinct from the actual trained-model rehearsal. AWS deployments display published release records and disable the public demo action. Release history remains accessible in AWS mode before a catalog exists, with a clear empty state when no decisions have been published.
+The API configuration endpoint selects `local_demo` or `cognito`. Cognito requires the `openid`, `profile` and `orderflow/read` scopes and exact same-origin callback and logout URLs. Include `orderflow/write` for operator and administrator actions; the API also checks the assigned role. Keep `window.API_BASE` empty for the prepared CloudFront deployment. A separate API Gateway origin requires an explicitly configured CORS policy as well as a secure API URL; the current infrastructure uses the same-origin route.
 
-The AWS frontend and API passed foundation smoke checks on 8 October 2026; that environment was subsequently torn down. Those checks did not validate live ML execution or forecast publication. Run the Python server for the current local workspace.
+## Workflows
+
+- Create an order with one or more catalog products and a simulated success or failure scenario.
+- Inspect its payment, shipment and event timeline.
+- Advance local worker steps, inspect blocked work and retry fulfillment.
+- Run an isolated recovery drill and inspect the recorded checks.
+- Restock inventory with administrator access.
+
+Order submissions retain their idempotency key after uncertain network or server responses. Retry with the same details to retrieve the original result. Changing an uncertain submission requires explicitly starting fresh; review the Orders page first.
+
+The AWS workspace refreshes automatically while an order is queued or processing, work awaits dispatch or a recovery drill is running. Automatic data refresh pauses when the workspace is idle to limit cloud usage; session checks continue. Use Refresh to see changes made by other users in an idle workspace. Creating, retrying, cancelling, restocking and starting a drill always refresh the workspace. Local demonstration behavior is unchanged. Hidden tabs and open dialogs pause automatic refresh.
+
+## Validation
+
+```text
+node --check frontend/app.js
+node --check frontend/auth.js
+node --test tests/frontend*.test.mjs
+```
+
+The behavior tests cover safe retries, output escaping, stock labels, cancellation controls, activity-based AWS refresh, role changes, CSRF, session expiry, sign-out and Cognito PKCE callback verification. Browser checks are also needed against the running API before deployment.
