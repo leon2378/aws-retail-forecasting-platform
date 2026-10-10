@@ -17,18 +17,9 @@ from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import ClientError, ConnectionClosedError, EndpointConnectionError, ReadTimeoutError
 
 
-SECTIONS = ("inventory", "orders", "work", "effects", "idempotency", "events", "outbox", "drills")
-MAX_ENTITIES = 2000
-MAX_STATE_BYTES = 3_000_000
-MAX_ENTITY_BYTES = 320_000
-MAX_TRANSACTION_ITEMS = 100
-MAX_ACCEPTED_ORDERS = 100
-PARTITION = "WORKSPACE"
-META_KEY = {"PK": PARTITION, "SK": "META"}
-
-
-class RepositoryUnavailable(RuntimeError):
-    """Storage is unavailable, not initialized or has exceeded a stated limit."""
+from .schema import (SECTIONS, MAX_ENTITIES, MAX_STATE_BYTES, MAX_ENTITY_BYTES,
+                     MAX_TRANSACTION_ITEMS, MAX_ACCEPTED_ORDERS, PARTITION, META_KEY,
+                     RepositoryUnavailable, entity_items)
 
 
 def _decimal(value):
@@ -59,26 +50,6 @@ def encode(item):
 def decode(item):
     deserializer = TypeDeserializer()
     return _native({key: deserializer.deserialize(value) for key, value in item.items()})
-
-
-def entity_items(state):
-    if set(state) != set(SECTIONS) or not all(isinstance(state[section], dict) for section in SECTIONS):
-        raise RepositoryUnavailable("Unsupported workspace schema.")
-    rows = {}
-    total_bytes = 0
-    for section in SECTIONS:
-        for key, payload in state[section].items():
-            if not isinstance(key, str) or not key or len(key.encode("utf-8")) > 800:
-                raise RepositoryUnavailable("Invalid entity key.")
-            size = len(json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8"))
-            if size > MAX_ENTITY_BYTES:
-                raise RepositoryUnavailable("An entity exceeds the demo item size limit.")
-            sk = f"{section}#{key}"
-            rows[sk] = {"PK": PARTITION, "SK": sk, "payload": payload}
-            total_bytes += size + len(sk.encode("utf-8")) + 100
-    if len(rows) > MAX_ENTITIES or total_bytes > MAX_STATE_BYTES:
-        raise RepositoryUnavailable("Workspace capacity reached; archive data before accepting more orders.")
-    return rows
 
 
 class DynamoRepository:
@@ -132,8 +103,12 @@ class DynamoRepository:
             self._pause(attempt)
         raise RepositoryUnavailable("Concurrent writes prevented a consistent snapshot. Retry the request.")
 
+    def snapshot(self):
+        """Return all workspace sections and their stable metadata revision."""
+        return self._snapshot()
+
     def load(self):
-        return self._snapshot()[0]
+        return self.snapshot()[0]
 
     def _pause(self, attempt):
         self.sleep(min(0.02 * (2 ** attempt), 0.25) * random.uniform(0.5, 1.0))

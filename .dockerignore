@@ -4,6 +4,10 @@
 !README.md
 !orderflow/
 !orderflow/**
+!aws/
+!aws/*.py
+!aws/handlers/
+!aws/handlers/*.py
 !frontend/
 !frontend/**
 **/__pycache__

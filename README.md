@@ -80,11 +80,14 @@ python -m orderflow seed --database data/orderflow.db
 python -m orderflow demo --database data/orderflow.db
 python -m orderflow process --database data/orderflow.db --limit 20
 python -m orderflow drill --database data/orderflow.db
+python -S -m orderflow rehearse --output build/reliability-report-001.json
 python -m orderflow backup data/backups/orderflow.db --database data/orderflow.db
 python -m orderflow validate --database data/orderflow.db
 ```
 
 `seed` initializes a catalog without replacing records; `demo` adds the six samples only to an empty workspace. `process` advances at most one stage of each selected pending order, so a successful order needs payment and fulfillment passes. Choose a new backup filename for every backup. See the operations guide before restoring.
+
+`rehearse` runs publisher failures, lost acknowledgments, retries and dead-letter recovery in temporary databases with a virtual-time queue. It preserves the application's workspace, saves new evidence and makes no AWS calls. The queue behavior is explicitly a simulation. A separate read-only recovery tool validates and compares full database snapshots before a future replacement-table exercise; see [failure rehearsals and restore verification](docs/reliability.md).
 
 The suite checks inventory races, duplicate handling, retry behavior, authorization and HTTP security. These repository tests operate locally and do not create cloud resources. Separate live verification passed **34 API/workflow checks, 15 infrastructure checks and 13 browser checks**, including three Cognito roles, automatic fulfillment, a stock race, duplicate delivery, cancellation and recovery. The deployed Standard Step Functions drill passed nine isolated checks. These are small functional checks, not production load or real commerce tests.
 
@@ -102,6 +105,7 @@ The image exposes no website port. Use the local `serve` command above for the a
 - [API contract](docs/api.md)
 - [Sign-in and permissions](docs/authentication.md)
 - [Recovery, backup and shutdown](docs/operations.md)
+- [Failure rehearsals and restore verification](docs/reliability.md)
 - [AWS deployment](docs/aws.md)
 - [Costs and alerts](docs/costs-and-alerts.md)
 - [Verified behavior and remaining checks](docs/verification.md)

@@ -14,6 +14,8 @@ from .storage import SQLiteRepository
 def parser():
     result = argparse.ArgumentParser(prog="orderflow", description="OrderFlow local reference application")
     commands = result.add_subparsers(dest="command", required=True)
+    rehearsal = commands.add_parser("rehearse", help="Run isolated publisher and queue failure simulations")
+    rehearsal.add_argument("--output", help="Save evidence to a new JSON filename")
     for command in ("serve", "seed", "demo", "drill", "process", "backup", "restore", "validate"):
         sub = commands.add_parser(command)
         sub.add_argument("--database", default="data/orderflow.db", help="Local SQLite workspace path")
@@ -33,6 +35,19 @@ def parser():
 def main(argv=None):
     arguments = parser().parse_args(argv)
     try:
+        if arguments.command == "rehearse":
+            from .reliability import reliability_rehearsal
+            if arguments.output and Path(arguments.output).exists():
+                raise ValueError("Evidence destination already exists; choose a new filename.")
+            payload = reliability_rehearsal()
+            encoded = json.dumps(payload, allow_nan=False, indent=2)
+            if arguments.output:
+                destination = Path(arguments.output)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                with destination.open("x", encoding="utf-8") as evidence:
+                    evidence.write(encoded + "\n")
+            print(encoded)
+            return 0 if payload["passed"] else 1
         if arguments.command == "restore" and not Path(arguments.database).is_file():
             raise ValueError("Restore requires an existing workspace; initialize it first.")
         repository = SQLiteRepository(arguments.database)

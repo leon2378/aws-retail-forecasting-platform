@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from orderflow.cli import main
 from orderflow.engine import Engine, validate_state
@@ -35,6 +36,22 @@ class AdministrationTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual(result["code"], "invalid_input")
         self.assertEqual(self.repository.load(), before)
+
+    def test_rehearsal_does_not_open_the_application_database_or_replace_evidence(self):
+        destination = Path(self.workspace.name) / "reliability.json"
+        report = {"passed": True, "simulation": True}
+        for expected in (0, 1):
+            with patch("orderflow.reliability.reliability_rehearsal", return_value=report) as rehearsal, \
+                    patch("orderflow.cli.SQLiteRepository", side_effect=AssertionError("Must remain isolated")), \
+                    redirect_stdout(StringIO()) as output:
+                self.assertEqual(main(["rehearse", "--output", str(destination)]), expected)
+                if expected == 0:
+                    rehearsal.assert_called_once_with()
+                    self.assertEqual(json.loads(output.getvalue()), report)
+                else:
+                    rehearsal.assert_not_called()
+                    self.assertIn("already exists", json.loads(output.getvalue())["error"])
+            self.assertEqual(json.loads(destination.read_text(encoding="utf-8")), report)
 
     def test_corrupt_restore_reports_error_and_retains_live_state_and_safety_backup(self):
         candidate = self.repository.backup(Path(self.workspace.name) / "candidate.db")

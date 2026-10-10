@@ -4,8 +4,6 @@ import logging
 import os
 from datetime import datetime, timezone
 
-from aws.repository import DynamoRepository, decode
-
 log = logging.getLogger(__name__)
 
 
@@ -36,6 +34,7 @@ def publish(repository, queue, queue_url, *, event_ids=None, limit=100):
 
 def handler(event, context):
     import boto3
+    from aws.repository import DynamoRepository, decode
     repository = DynamoRepository(os.environ["ORDERFLOW_TABLE"])
     records = event.get("Records")
     if records is None:

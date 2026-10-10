@@ -279,6 +279,24 @@ class QueueTests(unittest.TestCase):
             result = worker.process_records([{"messageId": "poison", "body": "not-json"}], Mock())
         self.assertEqual(result, {"batchItemFailures": [{"itemIdentifier": "poison"}]})
 
+    def test_receipt_evidence_links_failed_stage_without_logging_customer_or_body(self):
+        store, _ = repository()
+        engine = Engine(store)
+        order, _ = engine.submit(payload("receipt-evidence", "fulfillment_dead_letter"))
+        engine.process_order(order["id"], expected_stage="payment")
+        record = {"messageId": "delivery-001", "attributes": {"ApproximateReceiveCount": "3"},
+                  "body": json.dumps({"order_id": order["id"], "stage": "fulfillment", "event_id": "event-001"})}
+        with self.assertLogs("aws.handlers.worker", level="INFO") as evidence:
+            self.assertEqual(worker.process_records([record], engine),
+                             {"batchItemFailures": [{"itemIdentifier": "delivery-001"}]})
+        receipt = json.loads(evidence.records[0].getMessage().split(" ", 1)[1])
+        self.assertEqual(receipt["receive_count"], 3)
+        self.assertEqual(receipt["outcome"], "retry")
+        self.assertEqual(receipt["order_id"], order["id"])
+        self.assertEqual(receipt["stage"], "fulfillment")
+        self.assertNotIn("Test store", evidence.records[0].getMessage())
+        self.assertNotIn("body", receipt)
+
     def test_stream_failure_identifier_is_sequence_number(self):
         store, _ = repository()
         Engine(store).submit(payload())
@@ -286,7 +304,7 @@ class QueueTests(unittest.TestCase):
         queue = Mock()
         queue.send_message.side_effect = RuntimeError("SQS unavailable")
         event = {"Records": [{"eventName": "INSERT", "dynamodb": {"SequenceNumber": "123456", "NewImage": encode({"PK": "WORKSPACE", "SK": "outbox#" + entry["id"], "payload": entry})}}]}
-        with patch.dict(os.environ, {"ORDERFLOW_TABLE": "table", "WORK_QUEUE_URL": "queue"}), patch.object(outbox, "DynamoRepository", return_value=store), patch("boto3.client", return_value=queue), self.assertLogs("aws.handlers.outbox", level="ERROR"):
+        with patch.dict(os.environ, {"ORDERFLOW_TABLE": "table", "WORK_QUEUE_URL": "queue"}), patch("aws.repository.DynamoRepository", return_value=store), patch("boto3.client", return_value=queue), self.assertLogs("aws.handlers.outbox", level="ERROR"):
             result = outbox.handler(event, None)
         self.assertEqual(result, {"batchItemFailures": [{"itemIdentifier": "123456"}]})
 

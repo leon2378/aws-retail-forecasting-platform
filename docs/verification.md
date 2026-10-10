@@ -66,6 +66,18 @@ Duplicate SQS messages accelerated the domain retry-exhaustion scenario. This de
 
 Private outputs, state, identifiers, credentials and detailed cloud evidence remain outside source control. Temporary test passwords, access tokens and login diagnostics were removed locally; synthetic cloud identities were deleted with the stack. AWS retains one automatic DynamoDB SYSTEM backup for up to 35 days at no additional cost. Final billing for the test can be delayed. [DynamoDB backup pricing](https://aws.amazon.com/dynamodb/pricing/)
 
+## Offline failure preparation, 10 October 2026
+
+The expanded Python suite passed all 116 tests, including 27 restore-tool checks and ten publisher/worker rehearsal regressions. All four deployment fail-fast shell tests ran. The separate offline rehearsal passed 19 checks across five isolated scenarios using the actual publisher, worker and order engine, with real temporary SQLite transactions and a virtual-time queue.
+
+The scenarios cover a rejected send, a lost response after queue acceptance, repair and duplicate delivery, separate domain and queue retry budgets, modeled dead-letter arrival, Operator recovery followed by stale replay, malformed transport messages and mixed-batch acknowledgment. The tests also prove that deliberately regressed publisher/worker behavior produces failed evidence. Temporary databases are removed and the application's workspace is not opened.
+
+The rehearsal passed in a fresh source-archive extraction without the AWS SDK, and in a Python 3.12 container running as a non-root user with networking disabled. Release checks now retain a rehearsal report before packaging. These results establish local integration behavior; queue movement and timing are simulations, and no new AWS resources or account APIs were used.
+
+The read-only restore tool validated all 78 payload entities from the earlier private database archive, alongside its metadata revision (79 original raw entities including `META`). Tests reject changed payloads, missing recovery records, corrupt fingerprints, ambiguous JSON, overwriting existing snapshots and mismatched AWS account/table selections. Optional strict revision comparison checks the restore checkpoint as well as all eight workspace sections. The archive remains private; this validation is not a database restoration.
+
+Worker receipt logs now link message ID, order ID, stage, outgoing event, receive count and outcome while excluding customer fields and message bodies. The [failure and replacement-table runbook](reliability.md) identifies live evidence still needed and the infrastructure and queue reconciliation required for cutover.
+
 ## Remaining cloud evidence
 
 - Hosted token expiry and wrong issuer/audience rejection.

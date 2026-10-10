@@ -56,6 +56,8 @@ Restoring an older snapshot also rolls back its recorded effects. A future real 
 
 The AWS plan uses DynamoDB recovery controls. Live point-in-time recovery and a restore into a replacement table still need to be exercised after deployment. A recovery setting alone does not prove restoration works or establish a recovery time objective.
 
+Use the [failure rehearsal and restore-check guide](reliability.md) to prepare those checks locally. Its isolated publisher/queue rehearsal and offline snapshot comparison do not contact AWS. The explicit export command reads an existing, identity-checked table; it cannot restore it or switch the application to a replacement. The guide documents the separate queue reconciliation and infrastructure changes needed after restoration.
+
 ## Stop charges and remove resources
 
 The temporary Sydney deployment was tested, backed up and removed on 10 October 2026. No active OrderFlow infrastructure remains. Local commands and tests do not start AWS resources.
